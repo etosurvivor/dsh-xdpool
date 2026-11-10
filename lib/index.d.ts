@@ -3,7 +3,6 @@ import { Api, Model } from "@earendil-works/pi-ai";
 import { PiAiAdapter } from "@deepseek-ai/dsh-llm-pi-ai";
 import { Context, Context as Context$1 } from "@deepseek-ai/cordis";
 import { SettingsNamespace } from "@deepseek-ai/dsh-settings";
-//#region src/task-events.d.ts
 /**
  * The event chains that light up the client-scored daily tasks.
  *
@@ -163,8 +162,6 @@ export declare function expertActualUseEvent(expert: MarketExpert, conversationI
  * the conversation to that expert.
  */
 export declare function expertChatEvents(expert: MarketExpert, conversationId: string, requestId: string): Record<string, unknown>[];
-//#endregion
-//#region src/context-budget.d.ts
 /**
  * Context-window budgeting for the WorkBuddy shim.
  *
@@ -189,8 +186,6 @@ interface ChatMessage {
   content: unknown;
   [key: string]: unknown;
 }
-//#endregion
-//#region src/upstream.d.ts
 /** Upstream failure classes the shim maps onto distinct HTTP answers. */
 type UpstreamErrorKind = 'hard_credit' | 'soft_rate' | 'session_dead' | 'not_found' | 'server' | 'client';
 /** Token-refresh answer; fields the upstream omits stay absent. */
@@ -831,8 +826,6 @@ export declare class WorkBuddyUpstreamClient {
     energy: number;
   }>;
 }
-//#endregion
-//#region src/accounts.d.ts
 /** Minimal upstream surface the pool needs to refresh a token (no circular import). */
 interface TokenRefresher {
   refreshToken(credential: WorkBuddyCredential): Promise<{
@@ -1549,8 +1542,6 @@ export declare class WorkBuddyAccountPool {
     lastScanAtMs: number;
   };
 }
-//#endregion
-//#region src/status-paths.d.ts
 /**
  * Node-free constants and types shared by the Host and browser halves of the
  * XD Pool settings card.
@@ -2426,8 +2417,6 @@ export declare const DEFAULT_AUTOMATION_HOURS: {
   readonly travel: readonly [9, 21];
   readonly compensation: readonly [13];
 };
-//#endregion
-//#region src/catalog.d.ts
 /** One model the provider exposes. */
 interface WorkBuddyModelInfo {
   id: string;
@@ -2582,8 +2571,6 @@ interface ModelSelection {
   /** Per-model context-window cap, keyed by model id. */
   contextBudgets?: Readonly<Record<string, number | undefined>>;
 }
-//#endregion
-//#region src/providers.d.ts
 /** One provider's saved settings: on/off, its key, and any discovered models. */
 interface ProviderSetting {
   /**
@@ -2663,8 +2650,6 @@ interface AggregateSettings {
   enabled?: boolean;
   providers?: Readonly<Record<string, ProviderSetting>>;
 }
-//#endregion
-//#region src/combos.d.ts
 /** Chain strategies. Anything else on disk falls back to `fallback`. */
 declare const COMBO_STRATEGIES: readonly ['fallback', 'round-robin'];
 type ComboStrategy = (typeof COMBO_STRATEGIES)[number];
@@ -2733,8 +2718,6 @@ interface ComboModelRow {
    */
   combo: true;
 }
-//#endregion
-//#region src/store.d.ts
 /**
  * The aggregate section as it lives on disk.
  *
@@ -2782,8 +2765,6 @@ interface RelaySetting {
    */
   models?: string[];
 }
-//#endregion
-//#region src/stats.d.ts
 /**
  * Per-call usage accounting for the chat path.
  *
@@ -3041,8 +3022,6 @@ declare class UsageRecorder {
    */
   private days;
 }
-//#endregion
-//#region src/aggregate.d.ts
 /** Registry `format` → the wire vocabulary this module speaks. */
 type AggregateWire = 'chat' | 'responses' | 'messages';
 /** One model the aggregate lane offers. */
@@ -3095,8 +3074,6 @@ declare class AggregateCatalog {
   /** Whether any provider or chain is serving anything right now. */
   hasRows(): boolean;
 }
-//#endregion
-//#region src/channel-lane.d.ts
 /** One model as the gateway lists and routes it. */
 interface ChannelLaneRow {
   /** The composite id a client sends: `<channel>:<model>`. */
@@ -3129,8 +3106,6 @@ interface ChannelLane {
     signal: AbortSignal;
   }) => AsyncGenerator<ChannelLaneEvent>;
 }
-//#endregion
-//#region src/shim.d.ts
 interface ShimLogger {
   info?(...args: unknown[]): void;
   warn(...args: unknown[]): void;
@@ -3277,8 +3252,6 @@ interface WorkBuddyShimOptions {
   lanModels?: () => readonly string[] | undefined;
 }
 export declare function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShim;
-//#endregion
-//#region src/free-messages.d.ts
 /**
  * Message and frame translation between the OpenAI chat wire the plugin speaks
  * downstream and the three wires the免密 free gateway serves upstream.
@@ -3312,8 +3285,6 @@ export declare function createWorkBuddyShim(options: WorkBuddyShimOptions): Work
  */
 /** The wire shapes this file translates between. */
 type FreeWire = 'chat' | 'responses' | 'messages';
-//#endregion
-//#region src/free-catalog.d.ts
 /** One free-lane row, as the adapter and the shim both read it. */
 interface FreeModelRow {
   /** Published id, WITHOUT the `free:` prefix. */
@@ -3329,8 +3300,6 @@ interface FreeModelRow {
   canDisableThinking: boolean;
   regionSensitive: boolean;
 }
-//#endregion
-//#region src/adapter.d.ts
 /** Provider route this bundle owns. */
 /** Provider route this bundle owns for the domestic (CN) gateway. */
 export declare const XDPOOL_PROVIDER = "xdpool";
@@ -3372,8 +3341,6 @@ interface WorkBuddyAdapter {
  * different kind of record, not a differently-populated pool row.
  */
 export declare function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBuddyAdapter;
-//#endregion
-//#region src/scheduler.d.ts
 /** How often the loop wakes to look for a due job. */
 /**
  * How long to wait for event scoring to land before re-reading the task list.
@@ -4000,8 +3967,6 @@ export declare class WorkBuddyScheduler {
    */
   private runCompensation;
 }
-//#endregion
-//#region src/status.d.ts
 /** One account's status row. */
 interface AccountStatus {
   id: string;
@@ -4060,8 +4025,6 @@ export declare function buildStatus(options: StatusOptions): Promise<WorkBuddySt
 export declare function formatStatus(status: WorkBuddyStatus): string;
 /** Format the per-model credit multipliers. */
 export declare function formatRates(status: WorkBuddyStatus): string;
-//#endregion
-//#region src/ignored.d.ts
 /** Directory holding this plugin's own state (imported snapshots, ignore list). */
 export declare const PLUGIN_DATA_DIR_NAME = ".xdpool";
 /** File holding the permanent ignore list, inside {@link pluginDataDir}. */
@@ -4121,8 +4084,6 @@ export declare function ignoreAccount(account: {
 }, path?: string): Promise<IgnoredAccount[]>;
 /** Drop one account from the ignore list. Returns the resulting list. */
 export declare function unignoreAccount(accountId: string, path?: string): Promise<IgnoredAccount[]>;
-//#endregion
-//#region src/preferred.d.ts
 /** Absolute path of the preferred-account file. */
 export declare function preferredIdPath(env?: NodeJS.ProcessEnv): string;
 /**
@@ -4157,8 +4118,6 @@ export declare function readPreferredIdSync(path?: string): string | undefined;
  * free of documents that describe the absence of a decision.
  */
 export declare function writePreferredId(accountId: string | undefined, path?: string): Promise<void>;
-//#endregion
-//#region src/web-status.d.ts
 /** Constructor dependencies — a narrow slice of the pool runtime. */
 interface PoolStatusRouteOptions {
   pool: WorkBuddyAccountPool;
@@ -4380,8 +4339,6 @@ export declare function poolWebStatus(deps: PoolStatusRouteOptions, region?: Poo
  * make this registration disappear.
  */
 export declare function registerPoolStatusRoute(ctx: Context$1, deps: PoolStatusRouteOptions): void;
-//#endregion
-//#region src/index.d.ts
 /** Stable Cordis plugin name. */
 export declare const name = "llm-xdpool";
 /** The model registry required before the provider can register. */
@@ -4594,5 +4551,4 @@ export declare function createCore(logger?: {
  * because its models read the shim origin at construction time.
  */
 export declare function apply(ctx: Context, config?: Config): void;
-//#endregion
 export type { AccountStatus, AutomationLedger, AutomationRunSummary, AutomationStatus, Context, ExpertUseMode, IgnoredAccount, MarketExpert, ModelSelection, PoolStatusRouteOptions, PoolWebAccountIgnore, PoolWebCheckin, PoolWebCheckinClaim, PoolWebIgnoredAccount, PoolWebModel, PoolWebModelSelection, PoolWebStatus, SchedulerLogger, TaskEventChain, TaskEventTransport, UpstreamErrorKind, WorkBuddyAccount, WorkBuddyAdapter, WorkBuddyCredential, WorkBuddyModelInfo, WorkBuddyShim, WorkBuddyStatus };

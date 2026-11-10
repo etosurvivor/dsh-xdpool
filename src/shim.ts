@@ -1069,9 +1069,20 @@ function withBareModelId(raw: string, modelId: string): string {
       aggregate: aggregate === undefined ? [] : aggregate.catalog.providerRows(),
       host: channels === undefined ? [] : await channels.rows(),
     }
-    const members = comboChain(row)
+    let members = comboChain(row)
       .map(modelId => resolveComboMember(modelId, sources))
       .filter((member): member is ComboMember => member !== undefined)
+    const body = JSON.parse(raw) as { messages?: { content?: unknown }[] }
+    const hasImage = Array.isArray(body.messages) && body.messages.some(message =>
+      Array.isArray(message.content) && message.content.some((part: unknown) =>
+        typeof part === 'object' && part !== null && ['image_url', 'input_image', 'image'].includes(String((part as { type?: unknown }).type))))
+    if (hasImage) {
+      members = members.filter(member => member.supportsImages)
+      if (members.length === 0) {
+        writeOpenAIError(res, 400, 'combo_no_image_member', `chain ${row.id} has no image-capable member available`)
+        return
+      }
+    }
     if (members.length === 0) {
       // Reachable only if a chain row survived a refresh whose members have all
       // since gone away. Answering "no member" names the real problem; the

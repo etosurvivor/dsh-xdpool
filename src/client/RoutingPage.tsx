@@ -91,12 +91,18 @@ interface ChainDraft {
  * a fallback that never happened. A pool model is its bare id; anything else is
  * `owner/model`, the same composite id the aggregate catalog publishes.
  */
-function flattenDraft(platforms: ChainDraft['platforms']): string[] {
+function bareForOwner(owner: string, model: string): string {
+  if (owner === 'workbuddy') return model
+  while (model.startsWith(`${owner}/`) || model.startsWith(`${owner}:`)) model = model.slice(owner.length + 1)
+  return model
+}
+export function flattenDraft(platforms: ChainDraft['platforms']): string[] {
   const out: string[] = []
   const seen = new Set<string>()
   for (const platform of platforms) {
     for (const model of platform.models) {
-      const id = platform.owner === 'workbuddy' ? model : `${platform.owner}/${model}`
+      const bare = bareForOwner(platform.owner, model)
+      const id = platform.owner === 'workbuddy' ? bare : `${platform.owner}/${bare}`
       if (seen.has(id)) continue
       seen.add(id)
       out.push(id)
@@ -104,7 +110,7 @@ function flattenDraft(platforms: ChainDraft['platforms']): string[] {
   }
   return out
 }
-function draftOf(combo: PoolWebCombo): ChainDraft {
+export function draftOf(combo: PoolWebCombo): ChainDraft {
   /**
    * `missing` members are kept, grouped under their own owner, so the editor shows
    * the chain the user actually configured rather than the shorter one the roster
@@ -123,18 +129,20 @@ function draftOf(combo: PoolWebCombo): ChainDraft {
    */
   const platforms = (Array.isArray(combo.platforms) ? combo.platforms : [])
     .filter(group => group !== null && typeof group === 'object')
-    .map(group => ({
-      owner: typeof group.owner === 'string' ? group.owner : 'workbuddy',
-      models: Array.isArray(group.models)
-        ? [...group.models].filter(model => typeof model === 'string')
-        : [],
-    }))
+    .map(group => {
+      const owner = typeof group.owner === 'string' ? group.owner : 'workbuddy'
+      return { owner, models: Array.isArray(group.models)
+        ? [...new Set(group.models.filter(model => typeof model === 'string').map(model => bareForOwner(owner, model)))]
+        : [] }
+    })
   const known = new Set(Array.isArray(combo.models) ? combo.models : [])
   for (const modelId of Array.isArray(combo.missing) ? combo.missing : []) {
     if (known.has(modelId)) continue
     const slash = modelId.indexOf('/')
-    const owner = slash === -1 ? 'workbuddy' : modelId.slice(0, slash)
-    const model = slash === -1 ? modelId : modelId.slice(slash + 1)
+    const colon = modelId.indexOf(':')
+    const separator = slash === -1 ? colon : colon === -1 ? slash : Math.min(slash, colon)
+    const owner = separator === -1 ? 'workbuddy' : modelId.slice(0, separator)
+    const model = bareForOwner(owner, separator === -1 ? modelId : modelId.slice(separator + 1))
     const group = platforms.find(entry => entry.owner === owner)
     if (group === undefined) platforms.push({ owner, models: [model] })
     else if (!group.models.includes(model)) group.models.push(model)

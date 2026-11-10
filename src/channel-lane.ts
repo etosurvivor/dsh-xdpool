@@ -60,6 +60,7 @@ export interface ChannelLaneLlm {
   listModels: (provider: string) => Promise<readonly { id: string; name?: string }[]>
   resolveModelInfo?: (provider: string, model: string, signal?: AbortSignal) => Promise<{
     reasoning?: { efforts: readonly { id: string }[] }
+    inputModalities?: readonly string[]
   }>
   stream: (options: Record<string, unknown>) => AsyncIterable<Record<string, unknown>>
 }
@@ -131,6 +132,7 @@ export interface ChannelLaneRow {
   channel: string
   modelId: string
   name: string
+  supportsImages?: boolean
   supportedEfforts?: readonly string[]
 }
 
@@ -182,9 +184,11 @@ export function createChannelLane(options: {
     const pending = llm.listModels(channel)
       .then(models => Promise.all(models.map(async model => {
         let supportedEfforts: readonly string[] | undefined
+        let supportsImages: boolean | undefined
         if (llm.resolveModelInfo !== undefined) {
           try {
             const info = await llm.resolveModelInfo(channel, model.id)
+            if (Array.isArray(info.inputModalities)) supportsImages = info.inputModalities.includes('image')
             // Binary channels expose an enabled state, represented by the chain's
             // common High level; graded channels keep their exact named levels.
             supportedEfforts = [...new Set((info.reasoning?.efforts ?? [])
@@ -198,6 +202,7 @@ export function createChannelLane(options: {
           channel,
           modelId: model.id,
           name: model.name ?? model.id,
+          ...supportsImages === undefined ? {} : { supportsImages },
           ...supportedEfforts === undefined ? {} : { supportedEfforts },
         }
       })))
@@ -265,9 +270,12 @@ async function toHostMessage(
       blocks.push({ type: 'text', text: block.text })
       continue
     }
+    if (block.type === 'image' || block.type === 'input_image') {
+      throw new ChannelRequestError('unsupported image part format; use an image_url data URL')
+    }
     if (block.type === 'image_url' && typeof block.image_url === 'object' && block.image_url !== null) {
       const url = (block.image_url as Record<string, unknown>).url
-      if (typeof url !== 'string' || url.trim() === '') continue
+      if (typeof url !== 'string' || url.trim() === '') throw new ChannelRequestError('image_url part has no image URL')
       if (attachments === undefined) {
         throw new ChannelRequestError('this gateway build has no attachment store, so images cannot be forwarded')
       }
@@ -277,7 +285,9 @@ async function toHostMessage(
       // when it builds the provider request.
       const ref = await attachments.saveImage({ data: reading.data, mediaType: reading.mediaType })
       blocks.push({ type: 'image', attachment: ref })
+      continue
     }
+    if (block.type === 'image_url') throw new ChannelRequestError('image_url part has no image URL')
   }
   return { role, content: blocks }
 }
@@ -381,6 +391,10 @@ async function* runTurn(input: {
   }
 
   for await (const chunk of llm.stream(options)) {
+    if (chunk.type === 'finish' && typeof chunk.reason === 'object' && chunk.reason !== null && (chunk.reason as { kind?: unknown }).kind === 'error') {
+      const failure = (chunk.reason as { failure?: { message?: unknown } }).failure
+      throw new Error(typeof failure?.message === 'string' ? failure.message : `channel ${channel} model request failed`)
+    }
     const event = toChannelEvent(chunk)
     if (event !== undefined) yield event
   }

@@ -353,6 +353,7 @@ export interface HostModelRow {
   channel: string
   modelId: string
   name: string
+  supportsImages?: boolean
   supportedEfforts?: readonly string[]
 }
 /** The catalogs a combo chain is resolved against. */
@@ -403,10 +404,8 @@ export function resolveComboMember(modelId: string, sources: ComboSources): Comb
    * channel first cannot shadow one — and doing it first keeps a channel named after
    * a pool id from being swallowed.
    *
-   * The window and image flag are not known for a channel row (the host's listing
-   * publishes neither), so the chain's intersection falls back to the documented
-   * defaults. That is the honest answer: an unknown window must not be treated as a
-   * large one, or the host would size a compaction against a limit nobody promised.
+   * An unknown window uses the conservative default. Image support comes from
+   * resolved host metadata; missing capability metadata is not treated as support.
    */
   const hostRow = sources.host?.find(row => {
     if (row.id === id) return true
@@ -428,7 +427,7 @@ export function resolveComboMember(modelId: string, sources: ComboSources): Comb
       name: hostRow.name,
       contextWindow: COMBO_DEFAULT_CONTEXT_WINDOW,
       maxOutputTokens: COMBO_DEFAULT_MAX_OUTPUT,
-      supportsImages: false,
+      supportsImages: hostRow.supportsImages === true,
       ...hostRow.supportedEfforts === undefined ? {} : { supportedEfforts: hostRow.supportedEfforts },
     }
   }
@@ -523,11 +522,15 @@ export function buildComboCatalog(
     const id = isComboId(chain.id ?? '') ? (chain.id as string) : comboId(chain.name)
     if (id === '') continue
     const members: ComboMember[] = []
+    const memberIds = new Set<string>()
     for (const memberId of chain.models) {
       const member = resolveComboMember(memberId, sources)
       // Dropped, not kept: a member the catalogs no longer serve would make the
       // chain claim candidates it cannot reach.
-      if (member !== undefined) members.push(member)
+      if (member !== undefined && !memberIds.has(member.modelId)) {
+        memberIds.add(member.modelId)
+        members.push(member)
+      }
     }
     if (members.length === 0) continue
     const supportsReasoning = members.some(member => member.supportedEfforts?.some(effort => effort !== 'off'))
@@ -546,9 +549,8 @@ export function buildComboCatalog(
       // sizes a compaction against a member that cannot take it.
       contextWindow: Math.min(...members.map(member => member.contextWindow || COMBO_DEFAULT_CONTEXT_WINDOW)),
       maxOutputTokens: Math.min(...members.map(member => member.maxOutputTokens || COMBO_DEFAULT_MAX_OUTPUT)),
-      // INTERSECTION: every member must accept images, or the chain does not
-      // advertise them — a fallback that cannot read the image is a failed turn.
-      supportsImages: members.every(member => member.supportsImages),
+      // Image requests are routed only to members that explicitly support them.
+      supportsImages: members.some(member => member.supportsImages),
       ...supportedEfforts.length === 0 ? {} : { supportedEfforts },
       combo: true,
     })

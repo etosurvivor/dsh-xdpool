@@ -42,6 +42,7 @@ import {
   COMBO_DEFAULT_CONTEXT_WINDOW,
   siblingRoutes,
   splitPlatforms,
+  resolveComboMember,
   type ComboSetting,
   type HostModelRow,
 } from './combos.ts'
@@ -125,7 +126,7 @@ function relaySettingsOf(store: AggregateStore): RelaySettings {
  * itself looks like it obeyed, and the user is the only one who can tell that a
  * member they paid for is now a fallback to something free.
  */
-function combosStatusOf(
+export function combosStatusOf(
   store: AggregateStore,
   catalog: AggregateCatalog,
   poolRows: readonly WorkBuddyModelInfo[],
@@ -185,34 +186,39 @@ function combosStatusOf(
      * credential and endpoint the model picker uses.
      *
      * `usable: true` because a row only appears in this list once the host has
-     * already listed it for that channel, i.e. the account exists. The window and
-     * image flag are unknown (the host's listing publishes neither), so they are
-     * left at the documented defaults rather than invented.
+     * already listed it for that channel, i.e. the account exists. The window
+     * uses a conservative default; image support comes from resolved model metadata.
      */
     ...hostRows.map(row => ({
-      id: row.id,
+      id: `${row.channel}/${row.modelId}`,
       name: row.name,
       owner: row.channel,
       usable: true,
       contextWindow: COMBO_DEFAULT_CONTEXT_WINDOW,
-      supportsImages: false,
+      supportsImages: row.supportsImages === true,
       siblings: [] as readonly string[],
     })),
   ]
-  const known = new Set(candidates.map(candidate => candidate.id))
+  const sources = { pool: poolRows, aggregate: providerRows, host: hostRows }
+  const displayId = (id: string): string => {
+    const host = hostRows.find(row => row.id === id)
+    return host === undefined ? id : `${host.channel}/${host.modelId}`
+  }
   return {
     combos: chains.map(chain => {
-      const resolved = buildComboCatalog([chain], { pool: poolRows, aggregate: providerRows, host: hostRows })[0]
+      // Keep disabled chains editable without losing their configured members.
+      const resolved = buildComboCatalog([{ ...chain, enabled: true }], sources)[0]
+      const displayModels = [...new Set((resolved?.models ?? []).map(displayId))]
       return {
         id: resolved?.id ?? comboId(chain.name),
         name: chain.name,
-        models: resolved?.models ?? [],
+        models: displayModels,
         // Grouped from what the ROUTER can actually serve, not from the stored
         // groups: a platform whose every model disappeared would otherwise render
         // as a card with nothing in it, and the editor would offer to reorder
         // members that no longer exist.
-        platforms: splitPlatforms(resolved?.models ?? []),
-        missing: chain.models.filter(modelId => !known.has(modelId)),
+        platforms: splitPlatforms(displayModels),
+        missing: chain.models.filter(modelId => resolveComboMember(modelId, sources) === undefined),
         strategy: resolved?.strategy ?? chain.strategy ?? 'fallback',
         stickyLimit: resolved?.stickyLimit ?? chain.stickyLimit ?? 1,
         enabled: chain.enabled !== false,
@@ -1267,6 +1273,7 @@ function canonicalJson(value: unknown): string {
         channel: row.channel,
         modelId: row.modelId,
         name: row.name,
+        ...row.supportsImages === undefined ? {} : { supportsImages: row.supportsImages },
         ...row.supportedEfforts === undefined ? {} : { supportedEfforts: row.supportedEfforts },
       }))
     } catch (error: unknown) {

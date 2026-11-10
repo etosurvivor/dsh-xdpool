@@ -111,3 +111,77 @@ describe('per-member effort fallback', () => {
     expect(JSON.parse(withMemberReasoningEffort(raw, [])).reasoning_effort).toBeUndefined()
   })
 })
+
+describe('image routing through mixed host members', () => {
+  it('rejects image requests when the live roster no longer has a capable member', async () => {
+    const stream = vi.fn(() => (async function* () { yield { type: 'finish', reason: { kind: 'stop' } } })())
+    const llm: ChannelLaneLlm = { listModels: async () => [{ id: 'text' }], resolveModelInfo: async () => ({ inputModalities: ['text'] }), stream }
+    const channels = createChannelLane({ llm, providers: () => ['codearts'], toId: (c, m) => `${c}:${m}` })
+    const hosts = await channels.rows()
+    const store = { version: 1 as const, combos: [{ name: 'image', models: ['codearts/text'] }] }
+    const catalog = new AggregateCatalog(() => store, () => [], () => hosts); await catalog.refresh()
+    const shim = createWorkBuddyShim({ pool: { list: () => [], acquire: async () => undefined } as unknown as WorkBuddyAccountPool, client: {} as WorkBuddyUpstreamClient, catalog: new WorkBuddyCatalog(), aggregate: { catalog, readStore: () => store }, channels })
+    running.push(shim); await shim.ready
+    const response = await fetch(`${shim.baseUrl()}/v1/chat/completions`, { method: 'POST', headers: { Authorization: `Bearer ${shim.token()}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'combo:image', messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=' } }] }] }) })
+    expect(response.status).toBe(400); expect(await response.text()).toContain('combo_no_image_member')
+    expect(stream).not.toHaveBeenCalled()
+  })
+
+  it('skips text-only members, preserves the image, and retries a failed vision member', async () => {
+    const seen: Record<string, unknown>[] = []
+    const llm: ChannelLaneLlm = {
+      listModels: async () => [{ id: 'text' }, { id: 'vision-bad' }, { id: 'vision-good' }],
+      resolveModelInfo: async (_provider, id) => ({ inputModalities: id === 'text' ? ['text'] : ['text', 'image'] }),
+      stream: options => (async function* () {
+        seen.push(options)
+        if (options.model === 'vision-bad') { yield { type: 'finish', reason: { kind: 'error', failure: { message: 'upstream failed' } } }; return }
+        yield { type: 'text-delta', text: 'IMAGE_OK' }; yield { type: 'finish', reason: { kind: 'stop' } }
+      })(),
+    }
+    const saved: Uint8Array[] = []
+    const channels = createChannelLane({ llm, providers: () => ['codearts'], toId: (c, m) => `${c}:${m}`, attachments: () => ({ saveImage: async ({ data }) => { saved.push(data); return { id: 'test-image' } } }) })
+    const hosts = await channels.rows()
+    expect(hosts.map(row => row.supportsImages)).toEqual([false, true, true])
+    const store = { version: 1 as const, combos: [{ name: 'image', models: ['codearts/text', 'codearts/vision-bad', 'codearts/vision-good'] }] }
+    const catalog = new AggregateCatalog(() => store, () => [], () => hosts); await catalog.refresh()
+    expect(catalog.comboRows()[0]?.supportsImages).toBe(true)
+    const shim = createWorkBuddyShim({ pool: { list: () => [], acquire: async () => undefined } as unknown as WorkBuddyAccountPool, client: {} as WorkBuddyUpstreamClient, catalog: new WorkBuddyCatalog(), aggregate: { catalog, readStore: () => store }, channels })
+    running.push(shim); await shim.ready
+    const response = await fetch(`${shim.baseUrl()}/v1/chat/completions`, { method: 'POST', headers: { Authorization: `Bearer ${shim.token()}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'combo:image', messages: [{ role: 'user', content: [{ type: 'text', text: 'describe' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=' } }] }] }) })
+    expect(response.status).toBe(200); expect(await response.text()).toContain('IMAGE_OK')
+    expect(seen.map(call => call.model)).toEqual(['vision-bad', 'vision-good'])
+    expect(saved).toHaveLength(2)
+    for (const call of seen) expect(JSON.stringify(call.messages)).toContain('test-image')
+  })
+})
+
+describe('saved route status compatibility', () => {
+  it('normalizes legacy channel identifiers without marking reachable models missing', async () => {
+    const { combosStatusOf } = await import('../src/index.ts')
+    const host = [{ id: 'codearts:deepseek-v4.1-flash', channel: 'codearts', modelId: 'deepseek-v4.1-flash', name: 'Flash', supportedEfforts: ['high'], supportsImages: true }]
+    const store = { version: 1 as const, combos: [{ name: 'test', models: ['codearts/codearts:deepseek-v4.1-flash', 'codearts:deepseek-v4.1-flash', 'codearts/missing'] }] }
+    const catalog = new AggregateCatalog(() => store, () => [], () => host); await catalog.refresh()
+    const status = combosStatusOf(store, catalog, [], host)
+    expect(status.candidates.map(row => row.id)).toContain('codearts/deepseek-v4.1-flash')
+    expect(status.combos[0]?.models).toEqual(['codearts/deepseek-v4.1-flash'])
+    expect(status.combos[0]?.missing).toEqual(['codearts/missing'])
+    expect(status.combos[0]?.platforms).toEqual([{ owner: 'codearts', models: ['deepseek-v4.1-flash'] }])
+    expect(status.combos[0]?.supportsImages).toBe(true)
+    const disabled = { ...store, combos: [{ ...store.combos[0]!, enabled: false }] }
+    const disabledRow = combosStatusOf(disabled, catalog, [], host).combos[0]
+    expect(disabledRow?.enabled).toBe(false)
+    expect(disabledRow?.models).toEqual(['codearts/deepseek-v4.1-flash'])
+  })
+})
+
+describe('route editor legacy restoration', () => {
+  it('does not accumulate owner prefixes on repeated restores and saves', async () => {
+    const { draftOf, flattenDraft } = await import('../src/client/RoutingPage.tsx')
+    const initial = { id: 'combo:test', name: 'test', models: [], platforms: [], missing: ['codearts/codearts:deepseek-v4.1-flash', 'trae:deepseek-v4.1-flash'], strategy: 'fallback' as const, stickyLimit: 1, enabled: true, contextWindow: 1000, supportsImages: false }
+    const draft = draftOf(initial)
+    expect(draft.platforms).toEqual([{ owner: 'codearts', models: ['deepseek-v4.1-flash'] }, { owner: 'trae', models: ['deepseek-v4.1-flash'] }])
+    const saved = flattenDraft(draft.platforms)
+    expect(saved).toEqual(['codearts/deepseek-v4.1-flash', 'trae/deepseek-v4.1-flash'])
+    expect(flattenDraft(draftOf({ ...initial, models: saved, platforms: draft.platforms, missing: [] }).platforms)).toEqual(saved)
+  })
+})

@@ -284,7 +284,7 @@ describe('the chain catalog refuses to advertise what it cannot serve', () => {
     const chains = normalizeCombos([{ name: 'mix', models: ['agnes/gone'] }])
     expect(buildComboCatalog(chains, { pool: [POOL_MODEL], aggregate: [] })).toEqual([])
   })
-  it('takes the intersection of capacities, never the union', () => {
+  it('uses conservative size limits and exposes images if a member can handle them', () => {
     const chains = normalizeCombos([{ name: 'mix', models: ['hy3', COMPOSITE_ID] }])
     const rows = buildComboCatalog(chains, {
       pool: [POOL_MODEL],
@@ -305,9 +305,7 @@ describe('the chain catalog refuses to advertise what it cannot serve', () => {
     // that cannot take it.
     expect(row?.contextWindow).toBe(32_000)
     expect(row?.maxOutputTokens).toBe(8_192)
-    // Image support is an intersection too — one member that cannot read an
-    // image makes every image turn a failure.
-    expect(row?.supportsImages).toBe(false)
+    expect(row?.supportsImages).toBe(true)
   })
   it('rejects a chain that points at another chain', () => {
     const chains = normalizeCombos([{ name: 'outer', models: ['combo:inner'] }])

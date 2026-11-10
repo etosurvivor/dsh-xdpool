@@ -2736,6 +2736,7 @@ interface HostModelRow {
   channel: string;
   modelId: string;
   name: string;
+  supportsImages?: boolean;
   supportedEfforts?: readonly string[];
 }
 /**
@@ -3104,6 +3105,7 @@ interface ChannelLaneRow {
   channel: string;
   modelId: string;
   name: string;
+  supportsImages?: boolean;
   supportedEfforts?: readonly string[];
 }
 /** One translated event, so the caller decides how to frame it as SSE. */
@@ -4363,6 +4365,24 @@ export declare function poolWebStatus(deps: PoolStatusRouteOptions, region?: Poo
  * make this registration disappear.
  */
 export declare function registerPoolStatusRoute(ctx: Context$1, deps: PoolStatusRouteOptions): void;
+/**
+ * The routing document the chain editor draws from.
+ *
+ * `missing` is reported rather than silently dropped: the user's chain named a
+ * model that is gone, and the only honest thing is to show them WHICH one. OFM
+ * makes the same choice, for the same reason — a chain that quietly rewrites
+ * itself looks like it obeyed, and the user is the only one who can tell that a
+ * member they paid for is now a fallback to something free.
+ */
+export declare function combosStatusOf(store: AggregateStore, catalog: AggregateCatalog, poolRows: readonly WorkBuddyModelInfo[],
+/**
+ * Models served by the 扫码登录 channels, from the host's own registry.
+ *
+ * Passed in rather than fetched here because this function is synchronous and the
+ * host's listing is not. Omitted or empty simply means "no channel member is
+ * offered", which is the behaviour before this parameter existed.
+ */
+hostRows?: readonly HostModelRow[]): PoolWebCombosStatus;
 /** Stable Cordis plugin name. */
 export declare const name = "llm-xdpool";
 /** The model registry required before the provider can register. */

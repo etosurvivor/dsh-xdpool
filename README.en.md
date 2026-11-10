@@ -82,6 +82,8 @@ Chains containing a reasoning model offer **Low / High / Max**. Each selected me
 
 If a CodeArts context-summary call encounters a network or gateway timeout, the plugin can retry once through an existing chain containing that model. This requires a matching chain to be configured; a failed fallback follows normal error handling.
 
+A chain accepts images when at least one member explicitly supports them. Requests containing images are sent only to image-capable members, as reported by their channels.
+
 ## Install
 
 Since DSH 0.2.0, settings use peer tabs. Open **Heybash-Xdpool** from the sidebar, or press `Ctrl+Alt+,` and choose **Heybash**.
@@ -107,6 +109,8 @@ dsh plugin --profile desktop add "file:/your/project/path/dsh-xdpool-fork"
 ```
 
 After editing source, rebuild and update the installed plugin, then fully quit and reopen DSH Desktop. Keep the tracked `lib/` build outputs in sync with source.
+
+The package does not run a dependency-linking script during installation. DeepSeek Harness normally supplies the shared dependencies; if a particular environment cannot resolve them, run `node scripts/link-host-peers.mjs` manually from the installed package to troubleshoot.
 
 The account pools appear as **Heybash（国内版）** and **Heybash（国际版）**; the optional free-model group is **Heybash · 免费模型**.
 

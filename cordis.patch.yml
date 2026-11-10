@@ -3,7 +3,7 @@
 # flow. Requests rotate across every discovered account.
 - insert:
     - id: llm-xdpool
-      name: dsh-xdpool
+      name: heybash-xdpool
 #
 # billion-context is gone from this plugin, and so is the row that used to sit
 # here (`billion-context-xdpool`, kept disabled).

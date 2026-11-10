@@ -122,7 +122,7 @@ describe('image routing through mixed host members', () => {
     const catalog = new AggregateCatalog(() => store, () => [], () => hosts); await catalog.refresh()
     const shim = createWorkBuddyShim({ pool: { list: () => [], acquire: async () => undefined } as unknown as WorkBuddyAccountPool, client: {} as WorkBuddyUpstreamClient, catalog: new WorkBuddyCatalog(), aggregate: { catalog, readStore: () => store }, channels })
     running.push(shim); await shim.ready
-    const response = await fetch(`${shim.baseUrl()}/v1/chat/completions`, { method: 'POST', headers: { Authorization: `Bearer ${shim.token()}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'combo:image', messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=' } }] }] }) })
+    const response = await fetch(`${shim.baseUrl()}/v1/chat/completions`, { method: 'POST', headers: { Authorization: `Bearer ${shim.token()}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'combo:image', messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=' } }] }] }) })
     expect(response.status).toBe(400); expect(await response.text()).toContain('combo_no_image_member')
     expect(stream).not.toHaveBeenCalled()
   })
@@ -147,7 +147,7 @@ describe('image routing through mixed host members', () => {
     expect(catalog.comboRows()[0]?.supportsImages).toBe(true)
     const shim = createWorkBuddyShim({ pool: { list: () => [], acquire: async () => undefined } as unknown as WorkBuddyAccountPool, client: {} as WorkBuddyUpstreamClient, catalog: new WorkBuddyCatalog(), aggregate: { catalog, readStore: () => store }, channels })
     running.push(shim); await shim.ready
-    const response = await fetch(`${shim.baseUrl()}/v1/chat/completions`, { method: 'POST', headers: { Authorization: `Bearer ${shim.token()}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'combo:image', messages: [{ role: 'user', content: [{ type: 'text', text: 'describe' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=' } }] }] }) })
+    const response = await fetch(`${shim.baseUrl()}/v1/chat/completions`, { method: 'POST', headers: { Authorization: `Bearer ${shim.token()}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'combo:image', messages: [{ role: 'user', content: [{ type: 'text', text: 'describe' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=' } }] }] }) })
     expect(response.status).toBe(200); expect(await response.text()).toContain('IMAGE_OK')
     expect(seen.map(call => call.model)).toEqual(['vision-bad', 'vision-good'])
     expect(saved).toHaveLength(2)

@@ -1,0 +1,1709 @@
+# Changelog
+本项目的所有重要变更都会记录在此文件。
+版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
+## 2.6.5 — 安装不再被判失败，积分面板不再空白
+
+> 五张 issue，三个独立根因。前两张是同一件事的两面：2.6.4 的 postinstall 会把**本来能用的安装**判成失败。
+
+### postinstall 不再让安装回滚（#134、#135）
+
+打包版宿主的依赖全在 `app.asar` 里，而 postinstall 跑在裸 Node 进程里——`fs.existsSync` **看不进 asar**，只有 Electron 打过补丁的 `fs` 才行。所以「这里没找到」经常只是「这个进程看不见」，而不是「不存在」。
+
+2.6.3 根本没有 postinstall，在 macOS 上照样能加载：宿主自己在运行时解析这些依赖。2.6.4 的脚本却把探测失败当成安装损坏并 `exit(1)`，于是插件管理器回滚了本来可用的升级。
+
+现在探测不到只输出说明、**正常退出**。只有真正创建链接失败才警告，而那也是警告不是失败。
+
+自检同时改用 **ESM 解析**：`@earendil-works/pi-ai` 是 ESM-only，`exports` 只有 `types` 和 `import`，没有 `require`、也没有 `./package.json` 子路径。`require.resolve` 对它必抛 `ERR_PACKAGE_PATH_NOT_EXPORTED`——包明明装着、能 import，却被判为缺失，这就是 2.6.4 在 Windows 上装不上的原因。
+
+宿主路径探测也补齐了：macOS 的 `/Applications/.../Contents/Resources`、Linux 的 `~/.local/share`，以及**从 `process.execPath` 反推**——报告者的宿主装在 F 盘，所有硬编码的 C 盘猜测都落空。
+
+顺带修好幂等性：`locate()` 现在先看磁盘上的 `node_modules/<name>`，所以已经建好的链接不会被误判为缺失、反复重建。
+
+### 积分面板点开不再空白（#133）
+
+`failed || snapshot === undefined` 时整个组件 `return null`，把**触发按钮也一起摘掉**了。新建会话还没有快照，于是圆点先画出来（绿色，来自上一次渲染），随后组件卸载，屏幕上只剩一个空的浮层。
+
+现在圆点永远渲染，数据没到时在面板里说明「正在读取积分…」；读取失败则说失败。状态指示器必须对每一次点击都有回答——「还没加载」是回答，空盒子不是。
+
+未加载时的状态按灰色处理：未知余额不能显示成「你没问题」。
+
+### 空模型选择等于「全部」，不是「一个都不要」（#122）
+
+DSH 0.2.2-rc.1 会在选择器首次使用前写入 `enabledModelIds: []`。原代码把空数组当成真实选择，过滤后得到 **0 个模型**，于是卡片上列着 16 个模型，每次请求却报 `has no configured model "<id>"`。
+
+现在空数组与 `undefined` 同等对待。两种状态事后无法区分，所以选了安全的那一侧：空选择等同于没选择，而「全部」一次点击就能改回来，「什么都没有」看起来像装坏了。
+
+### 路由链缺少字段不再让整页崩掉
+
+从磁盘读到的链路可能整个缺 `platforms`，或者某个分组的 `models` 缺失。三个字段原先都是无保护地展开，任何一处缺失都会让路由页崩在 `Cannot read properties of undefined (reading 'length')`——这个报错既不说是哪条链、也不说哪个字段。现在统一归一化。
+
+### 账号池与模型选择器用同一个名字（#119）
+
+`buddy` 这条 lane 在插件里叫「WorkBuddy 国内版」，而 vendor 产品常量仍沿用上游旧名「CodeBuddy (腾讯)」，模型选择器的分组名因此和账号池卡片对不上。在呈现层覆盖，不改常量——那个常量还被 429 的报错文案引用着。
+
+## 2.6.4 — postinstall 真的会跑了
+
+2.6.3 的修复方向是对的，但  的改动在合并时丢了：`postinstall` 没挂上，`scripts/` 也没进 `files`。结果是 npm 上的 2.6.3 依然缺 peer 依赖，靠的是此前手动建的 junction。
+
+现在两者都补齐，并核对 `npm pack` 的内容确实包含 `scripts/link-host-peers.mjs`。
+
+## 2.6.3 — 修掉 2.6.2 装上后插件起不来的问题
+
+> 2.6.2 从 npm 安装后，插件导入失败（`Cannot find package '@earendil-works/pi-ai'`），
+> 于是它的所有 web 路由都没注册 —— 积分接口 404，用量面板空白，并显示
+> 「网关尚未上报 token 数」。这句话把问题指向了网关，实际是插件自己没加载起来。
+
+### 缺 7 个 peer 依赖
+
+2.6.2 有 7 个 peerDependency（`cordis`、`dsh-llm`、`dsh-llm-pi-ai`、`dsh-credentials`、
+`dsh-settings`、`schemastery`、`pi-ai`），这些由宿主提供。手动复制目录时它们从宿主的
+`node_modules` 可见；改用包管理器安装后，解析链断了。
+
+现在 `postinstall` 会把这些包从宿主链接进 profile，版本与宿主完全一致，不额外占用空间。
+装完自带一次导入自检，失败会直接把原因写进日志，而不是等用户看到空白面板才发现。
+
+### 今日用量的三个缺陷
+
+**日期用了 UTC**：`toISOString()` 取的是 UTC 日期，在 UTC+8 意味着凌晨 0–8 点算成前一天。
+现在按本地日历取值。
+
+**`days: 1` 实际覆盖两天**：窗口下界原先减了整个 `days`，于是「今日」包含了昨天。
+改成 `days - 1`，标签与口径一致。
+
+**重启后归零**：`UsageRecorder` 只存内存，重启即空。现在启动时从渠道包的持久账本
+（保留 90 天）回填当天用量 —— 那些数据一直在磁盘上，只是从没被读回来。
+回填是尽力而为的：读不到只损失重启前的数字，不影响插件。
+
+## 2.6.2 — 积分统计、账号备份、输入框积分显示
+
+> 这一版把「用了多少积分」「还剩多少」「账号怎么搬走」三件事做完了，并修掉了几个把正确数据说错的地方。
+
+### 积分消耗：按官方的三段系数算，不再用倍率当单价
+
+模型选择器上的 `x0.11` 是一个**显示倍率**，不是每百万 token 的单价。真实计费是三段系数：
+
+```
+积分 = 未命中缓存的输入 × 输入系数 + 缓存命中 × 缓存系数 + 输出 × 输出系数
+```
+
+系数单位是「积分 / 百万 token」，同一模型三段差别很大（DeepSeek-V4.1-Flash 是 14.29 / 0.29 / 57.1）。
+
+按旧算法（总 token × 倍率），一天 355 万输入 + 2.88 亿缓存 + 36 万输出会被算成 **0.43 积分**，实际是 **155 积分** —— 差 360 倍。原因有两个：把显示倍率当成了单价，以及**完全没读缓存字段**。agent 类使用里缓存命中常占 95% 以上，忽略它就等于漏掉大部分账单。
+
+- 13 个模型的实测系数写进 `credits.ts`，标注测量日期（`2026-11-06`）
+- 读取账本里的 `cacheReadTokens`，按缓存档单独计费
+- 未收录的模型显示「未定价」，不按猜的价格计费
+- 模型 id 大小写、厂商前缀都能匹配（`DeepSeek-V4.1-Flash`、`nvidia/xxx`）
+- 只统计账号池自己的用量（`direct`），网关反代的流量单独计数、不计入
+
+### 输入框旁加了积分显示
+
+位置：**输入框那一行，模型名旁边**。一个池子图标，绿色表示还有积分，灰色表示用完；点开看剩余积分、今日已用和当前模型。
+
+### 账号备份：独立的第七个功能页
+
+导出加密文件，导入时整体替换。
+
+- 加密在浏览器里完成：PBKDF2-SHA256（31 万轮）+ AES-GCM-256，salt 和 IV 每次重新生成
+- 密码至少 8 位，不足直接拒绝导出
+- 密码错和文件损坏合并成一句话 —— 区分会泄露「猜对了没有」
+- 导入前弹确认，用 `backup.status` 报出将替换几个账号
+- 仍接受旧的未加密文件，不让早期导出的人被卡住
+- 一个按钮完成「选文件 + 导入」，不再是两步
+
+### 商汤的登录奖励
+
+`credits.claimAll` 对 Raccoon 明确拒绝，原文是「每日积分由服务端自动发放；登录奖励请在「新手任务」中领取」—— 但它只是把提示当错误返回。真正的入口是独立端点 `onboarding.claim`，pack 里早已实现，只是客户端从未调用。
+
+现在有「领取一次性奖励」按钮，对 Raccoon 和 Loomy 生效，按账号逐个领取。
+
+### CodeArts：三个缺陷
+
+**403 被当成凭据问题**（沿用 2.6.0 的修复并延续）：网关对 User-Agent 的 WAF 判定也会回 403，而 `403 → AUTH` 的规则会让一个请求头问题被报成「API 密钥无效」。CodeArts 那条已按 body 区分，其余厂商不动（对多数厂商 403 确实是凭据问题）。
+
+**被用掉的 refresh token 没有归入「凭据失效」**：`requestToken` 只认 `invalid_grant` 和 `ExpiredRefreshToken`，`STS5.1806`（`the refresh token has been used`）落到普通错误分支。而代码里**早就写好了**处理这种情况的逻辑 —— `instanceof RefreshTokenExpiredError` 会重读凭据，token 已被别处轮换时对账并**不**标记为死。错误没带着正确的类型到达那里，所以用户看到的只是一串看不懂的 400。
+
+华为 STS 的 refresh token 是**一次性**的：用过即作废并签发新的，所以「已被使用」意味着并发重放，或新 token 没存住。
+
+**过期的凭据不自愈**：STS 凭据寿命约 2 小时，refresh token 约 30 天。一个因模型请求失败而被 failover 走的账号，永远不再进入调度器「1 小时内到期」的续期窗口，于是一直躺在一个可续期的过期状态里。现在自愈挂在三条读凭据的 RPC 共享入口（余额、签到状态、领取），走与调度器同一条 per-ref 串行队列，避免并发消费同一个 token。
+
+### 路由
+
+- **限流靠后**：还有额度却被 429 的账号，排到所有未限流的后面。之前它和「额度耗尽」被同等对待，而两者该给的回应不同
+- **休息不丢弃**：被拒的账号排最后，但**只剩它时仍然尝试**，而不是直接失败
+- **未知账户先试一次**：从未读过余额的账号在 `priority` 模式下优先一次，让它的答案把额度填上
+- **只认 `ready` 档**：策略在 `ready` 池里选，`limited`/`resting` 只有在 `ready` 空时才成为候选 —— 否则按权重抽取的策略可能跳过一个健康账号去选冷却中的
+- 修掉了「均衡模式下、有健康账号时仍可能选到冷却账号」
+- 链可以选到扫码登录渠道（`<channel>:<model>`），走宿主适配器，与聚合渠道严格区分（凭据、错误词汇、代码路径都不同）
+- 两级结构：先选平台，平台内再排模型
+
+### 网关
+
+- **模型 id 可点击复制**，点它不会误触勾选框（那一行是 `<label>`，不阻止就会把刚复制的模型取消勾选）
+- **base URL 提供两种写法** —— 客户端自己补 `/v1` 的和要填完整前缀的，各自标注适用场景。之前只给带 `/v1` 的，遇到自己补 `/v1` 的客户端就成了 `/v1/v1/responses`
+- 明确写出只支持 Chat Completions；用 Responses 或 Anthropic 协议会拿到 404
+- 按渠道分组时显示每个模型的倍率
+- **`EADDRINUSE` 翻译成可操作的说明**：`listen EADDRINUSE` 本身只说现象。最常见原因不是「别的程序占了端口」，而是**上一个 DSH 还没完全退出**，仍占着自己开的网关端口 —— 所以提示是「稍等重试，或换个端口」
+- 复制按钮带降级：`navigator.clipboard` 在非安全上下文（局域网 http）里是 `undefined` 而非拒绝，所以有 `execCommand` 兜底，两条都不行就明确报失败
+
+### 界面
+
+- 交流群二维码改成**就地展开**在标签栏下方，不再是弹窗
+- 密码字段、复制按钮、进度条等控件的样式统一
+- 样式按页面分组导致的失效问题修复了两处（圆点、备份面板）—— 跨页面组件现在自带样式表
+
+### 其它
+
+- 渠道池首屏 `provider.status` 加 30 秒缓存（一次请求要数 13 个渠道的账号）
+- 免密 lane 默认关闭
+- 同模型多线路优先（限流时换线路拿同一模型，而不是换模型）
+- 熔断后的账号靠探测复活，探测成功才解除
+- 自定义 OpenAI 兼容端点
+- 凭据文件权限收紧到仅本人可读
+
+## 2.6.0 — 一次收掉 2.5.1 之后的全部改动
+
+> 本版把 2.5.2 到 2.5.6 的五个小版本合并发布。内容分四块：**群反馈的五处界面问题**、**八项借鉴来的功能**、**CodeArts 403 那四个缺陷**、以及**路由与看板的一次结构升级**。另外收掉了我自己在修补过程中引入的三处错误（lane 选择极性反转、两套 tsconfig 判据不一、`source` 变量在死区被读取）。
+
+### 一、群里反馈的五处
+
+**「重启后模型选择变成 1/14」——不是丢了，是名册短了**
+
+保存的选择一直完好。真正发生的是目录刷新那一次网关只回了 14 个模型，用户存的 5 个里只有 1 个在其中，界面只显示 `已启用 1 / 14`，看起来就像被重置。现在多一行 `另有 N 个已保存的模型当前未提供`，悬停列出具体 id —— 两个数字都对，不一致本身就是信息，以前这条信息不可见。
+
+**「点了咋没起作用，实际都续在后面」——面板改成手风琴**
+
+账号列表是一账号一行、模型列表是一模型一卡，两个同时展开会把第二个顶到屏外。现在同一张卡内一次只开一个面板，跨卡仍然独立。模型列表也默认只显示已启用的行，其余收进 `显示其余 N 个`。
+
+**「OpenCode Free 关不掉，应该默认关闭」**
+
+免密 lane（`free:` 模型）原本无条件注册，而聚合总开关管不到它 —— 它压根不是聚合 provider，所以没有任何 UI 能关。新增 `freeLane` 开关，**默认关**；关闭时 `current()` 返回空，`allRows()` 保留花名册给需要解释它的页面。这样「关掉」是选择，不是抹除。
+
+**「移出账号后又被加回来」/「账号使用方式只有 WorkBuddy 有」**
+
+忽略名单的持久化与扫描闸门补齐；「账号使用方式」扩展为可作用于第三方渠道的多 Key 分配（见第二节）。
+
+### 二、八项借鉴来的功能
+
+**A. 同模型多线路优先** —— 限流时正确动作通常是**换线路拿同一个模型**，而不是换模型（换模型会改上下文窗口、工具调用、文风）。注册表里 86 个模型 id 挂在 2 家以上，`siblingRoutes` 从目录推导出来。
+
+**B. 熔断 + 探测复活** —— 登录被拒后的冷却时长是猜的，两头都容易错。现在每轮运行对坐冷账号做一次廉价鉴权读，**只有探测成功才解除**，失败则冷却原样留着 —— 否则探测频率会改变账号被关多久。
+
+**C. 签到先读状态** —— 领取接口幂等，旧代码靠「故意触发错误再翻译成成功」工作。改成先 GET 状态，常见情况连写请求都不发。状态读失败时回落旧行为。
+
+**D. 兜底模型表不再带价格** —— 几个月前抓的倍率会让人按错数字做预算，`multiplier: 0` 还会点亮「免费」徽章让结束的促销继续宣称免费。促销徽章一并删掉；`undefined` 才是诚实的。
+
+**E. 凭据文件收成仅本人可读** —— 每个密文原本走裸 `writeFile`，POSIX 上通常是 `0644`（同机其他用户可读，而里面是明文 token）。权限在写临时文件时打上，原子重命名带过去。Windows 的缺口写在注释里而非藏起来。
+
+**F. 自动化逐条状态** —— `detail` 是自由文本，所以「0 条已领」在三种情况下长得一样。现在每个任务给出 `已领/早已领过/暂不可领/失败`，卡片渲染成四枚状态标签。
+
+**G. 自定义 OpenAI 兼容端点** —— 一个注册表位置 `custom_openai`，**baseUrl 与模型列表都为空**：vLLM、LiteLLM、one-api、自建网关都行。不给默认 URL，因为猜一个会把请求发到用户没选过的地方。
+
+**H. 自动化够到以前够不到的任务** —— deeplink 里没有 `expertId` 时按标题去市场查（多个匹配就拒绝，召唤错专家照样 0 分）；账号资格从「global 一律不做」改成**按 job 分级**，签到会跑 global。
+
+### 三、CodeArts 403：四个缺陷
+
+网友的报告带了完整对照实验。四个都修了：
+
+1. **真因是 User-Agent** —— `attributionHeaders()` 盖上宿主 bot UA，snap-access 网关对它直接回 `403 TM.00000001`。同凭证、同 body、同接口：bot UA→403，不设 UA→200，IDE 形状的 UA→200。现在请求显式设自己的 UA，其余 attribution 头保留。
+2. **403 被归成 `AUTH`** —— 网关所有 IAM 拒绝实测都是 401 `APIG.0301`；唯一的 403 是 WAF 判定。卡片把 `AUTH` 渲染成「API 密钥无效」，于是一个请求头问题被报成凭据问题。现在 403 按 body 判。
+3. **鉴权失败不换号** —— 原分支只 `refresh()` 当前账号，池里两个账号时一个被拒就整平台失败。现在也轮询，每个账号只试一次。
+4. **报错丢掉上游 body** —— 原来只剩 `HTTP 403`。现在附上 `errorDetail`（截 200 字）。
+
+范围是刻意的：`401 || 403 → AUTH` 在 pack 里出现 11 次、分属 6 个适配器，而对多数厂商 403 确实是凭据问题。只有 CodeArts 实测过，所以只改它那两处，测试断言其余 9 处不变。
+
+### 四、路由与看板的结构升级
+
+**路由改成两级（平台 → 模型）**
+
+一条链现在是 `platforms: [{ owner, models[] }]`，界面就是它的样子：折叠态每平台一枚胶囊（`1. TRAE（字节）· 1`），展开态每平台一张卡（上移/下移/移除 + 卡内模型列表 + 只列本平台模型的下拉）。
+
+这里有个必须处理的陷阱：**分组对交错链是有损的**。`hy3 → opencode/x → glm-5.3` 按 owner 分组后两个池模型并到一起，顺序被改 —— 也就是路由优先级被改了。所以草稿同时持有 `flat`（服务端给的原始序列）和 `platforms`，**只有真正编辑了平台结构才重算 `flat`**。打开一条链直接保存，顺序一个字节都不变。
+
+**路由能选到扫码登录渠道**
+
+之前候选只来自本插件自己的两个目录（池名册 + 聚合注册表），而扫码登录渠道是宿主注册的 provider，两个都没有 —— 所以只有一行。现在接上宿主渠道，成员 id 形式 `<channel>:<model>`，执行走 shim 本来就有第五条 lane。`host` 与 `aggregate` 严格分开（凭据、错误词汇、代码路径都不同）。
+
+**看板认得渠道了**
+
+`UsageCall` 原本只有 `region`（cn/global），而这是池专有属性，所以每行都写「国内版」。现在 `channel` 进了 `UsageCall` **并进了两个聚合表的分组键** —— 同一模型 id 可挂多家，混成一行会把一家 token 记到另一家头上。三张表首列都改成渠道。
+
+**聚合渠道支持多把 Key**
+
+`ProviderSetting.apiKeys` + `distribution`；`appendApiKey` 是**指令**而非存储字段（读取路由从不回显 Key，只报 `keyCount`，所以浏览器发整份列表只能用占位符拼，会把看不见的 Key 冲掉）。轮转只对「这把 Key 的问题」重试（429/401），400/404/402/5xx 换 Key 只会倍增等待。策略控件**只在 `keyCount > 1` 时出现** —— 一把 Key 时它是个只有一个选项的开关。
+
+### 五、我引入并修掉的三处
+
+**lane 选择极性反转** —— `laneAllowedIds` 返回白名单，而调用点当黑名单用，于是勾 3/16 露出的是另外 13 个。这段代码从 2.5.0 起就是反的，只因当时 lane 没有发布选择（`allow === undefined` 短路）而一直没显形。修正为对着名册取补集。
+
+**两套 tsconfig 判据不一** —— host 没开 `exactOptionalPropertyTypes`，client 开了，且 TypeScript 会顺 import 把 host 文件拉进 client 程序，于是同一文件「一套配置绿、另一套红」。现在两边都开，9 处一并修好（其中 3 处顺带暴露了真实的重复计算）。
+
+**`source` 在死区被读取** —— 上一版给 10 个调用点一刀切加 `, source`，但 5 个适配器的名册变量叫 `all`，另有 1 个声明在调用之后。thunk 只延后一次调用、不延后一行，所以那一处改成了局部换序。改写脚本改为逐行扫描 + 每步断言。
+
+### 六、其它
+
+- 看板数字列的表头与数据对齐（`.dsm-xdpool-table th` 优先级高于 `.dsm-xdpool-num`，表头一直左对齐）
+- 链成员有了 180 秒自己的超时（调用方 signal 只覆盖「用户取消」，不覆盖「供应商攥着连接不放」）
+- `REASON_STATUS` 表：cooling/session_dead/reserve/disabled/empty 各有状态码，不再一律 401
+- 过期不再显示成「长期有效」，单位降到小时/分钟
+- 渠道池 `provider.status` 加 30 秒缓存（一次请求数 13 个渠道的账号，成本是十三个的和）
+- 交流群弹窗改成双码（微信机器人 + QQ 群），README 顶部同步；README 下载徽章改读新包实时统计
+- 链的每次跳过记录 `成员 → 原因 (状态码)`，全败时把整条轨迹写进错误消息
+- 按渠道分组的下拉、同模型线路按钮在两级结构落地后移除（分组已结构化，再套一层 optgroup 是把卡片说过的话再说一遍）
+
+## 2.5.1 — 六张 issue、一个交流群入口，外加拿掉 billion-context
+
+> 2.5.0 之后收到的反馈集中在两类：**看得见却点不动的界面**（链不显示、单选互顶、卡片空白），和**说错话的报错**（额度已用尽、密钥无效、为预留让你调低预留）。这一版把这两类都按「根因 + 可复现断言」的方式收掉，同时按你的要求移除了 billion-context 那一页，并在「点Star」旁边加了「交流群」。
+
+### 修掉六张 issue
+
+**#99 路由页有链却不显示，保存还会把链删掉**
+
+`setDrafts(prev => seeded.current ? prev : …)` 把守卫放进了函数式更新回调，紧接着一行同步 `seeded.current = true`。React 的回调在提交阶段才跑，那时标志位已经是 `true`，于是恒走 `prev` 分支 —— 初始值 `[]` 原样返回。列表恒空，而保存提交的是整张表，**第一次保存就把服务端那条链覆盖成空**。
+
+改成同步判断再置位（与同项目 `GatewayPage.tsx` 同形）。回归用例现在连「形状」一起锁：不许再出现 `setDrafts(prev => seeded …)`。
+
+**#101 国内版/国际版的「1M」互相顶掉**
+
+两张区域卡同时挂载（折叠面板用 `hidden`，不是卸载），预算单选 `name` 只用了 `budget-${model.id}`，同名即同组，浏览器只保留最后一个 `checked`。后渲染的国际版把国内版的黑点顶掉，表现为「点了没保存」。用 `useId()` 给每一行实例加作用域 —— 只加 region 不够，设置页与侧栏可能同时挂载同一区域。
+
+**#102 切回账号池就重拉全部数据（2–4 秒空白）**
+
+页签正文是三选一表达式，切页即卸载，`useState` 随之清零；而且 `load()` 把 `account.list` / `model.list` / `credits.balances` / `credits.status` 四合一一 `await Promise.all`，让整张卡等唯一走网络的余额查询。
+
+- 快照提到模块作用域，且**写在 `mountedRef` 判据之前**：已经发出去的结果即便在卸载后才回来，仍然落进快照
+- 拆两波：wave1 只问内存里的三项，先把卡画全（余额格写 `…`）；wave2 每渠道各自回填
+- `balancePending` 原来被硬编成 `false`，让渲染层那条 `…` 分支成了死代码 —— 现在真正用上了
+- 每次加载带单调序号，旧答案盖不掉新答案
+
+**#95 扫码渠道卡整片空白，且不报错**
+
+`if (entries.length === 0 && error === undefined) return <></>`。而 RPC 桥解析失败时 `provider.status` 回 `ok: false`、映射出空 map、`entries` 为空、`error` 仍是 `undefined` —— **「桥断了」和「没有扫码账号」渲染成同一片空气**。
+
+改成三态：读取中一行字、失败写明原因、成功但确实没有账号才保持安静。
+
+**#98 自动化三处**
+
+- 「体验XX专家」任务族（`expert_use_maidehao` / `douyinyin` / `shangjia_xuanchuan` / `bowangwang`，加同族的 `WorkBuddy_Valorant`）不在 `EVENT_CHAIN_BUILDERS` 里，所以 accept 和 claim 都正常、进度永远 0/1。这批专家**不在市场列表里**，expertId 只存在于任务自己的 `jump_url` 里（percent-encoded deeplink），因此新增 `expertIdFromJumpUrl()`：先解 `deeplink` 参数、再读内层 `expertId`。use 事件保持默认 `craft` 模式 —— `LOCAL`/零成本是 lighthouse 的专属判据。
+- `unavailableReason()` 遇到第一个低于预留的账号就 `return reserve`，后面账号根本没检查。一张 5 账号池里只要有一个长期低于预留线，任何失败都会被归因成 402「调低预留」。改为计数式：`dead`/`cooling`/`disabled` 先报（这些改数字改不好），只有**无可用账号且全部被预留挡住**才报 `reserve`。
+- `automationEarnings` 写入是 fire-and-forget，领取完成到进程退出的窗口里丢账（实测领了 21 个任务，落盘仍是 `credit: 0`）。`persistEarnings()` 改为返回 promise，`runJob` 收尾 `await this.flushEarnings()`。
+
+**#96 免密 lane 全失败，却报「额度已用尽」**
+
+403 指纹拒绝被渲染成宿主自己的措辞，指向「等待」；真正该做的是「升级插件」。新增 `withFreeTierHint()`：先说指纹失配、明确「等待无用，请更新」，再保留 per-conversation 配额这一可能（两者从外部无法区分，不自作聪明）。429 仍走原有的会话配额提示。
+
+### 新增：「交流群」
+
+- 卡片右上角「点Star」旁边多一个「交流群」按钮，点开在原位弹层显示微信群码
+- 底部导航网格从 `1fr auto` 扩成 `1fr auto auto`，否则第二个按钮会掉到标签栏下面
+- 二维码以 data URI 内嵌进 `lib/client.js`：客户端是宿主加载的单个脚本，解析不了包内相对路径，而 `<img>` 加载失败是**静默**的
+- Esc 与点击遮罩都能关；`alt` 写的是操作指引（读屏用户扫不了码）
+- 同一张图放在 `README.md` 与 `README.en.md` 第 13 行（标题与徽章之后），过期了换 `assets/community-qr.png` 并重跑 `tools/make-community-qr.mjs`
+
+### 移除：billion-context
+
+那一页只读观测另一个插件的回环代理。连同 `src/billion.ts`、`src/billion-mount.ts`、`src/client/BillionPage.tsx`、`/plugins/dsh-xdpool/billion` 路由、`POOL_BILLION_PATH` 与两个文档类型、84 个 `billion.*`/`shell.tabBillion` 语言键、`BILLION_CARD_CSS`、`optionalDependencies.billion-context`，以及 `cordis.patch.yml` 里那行长期 `disabled: true` 的条目一起删掉。README 的页面表随之从七页改回六页。
+
+### 一并发布的两个既有改动
+
+- **CodeArts 的输出上限是上限，不是默认值** —— `listModels()` 报 `maxTokens`、`resolveModel()` 报 `defaultMaxTokens`、线上 `max_tokens` 做 `Math.min` clamp。原先 `?? 65536` 只兜底不设界，宿主把别的 provider 的 384000 原样递过来就触发 HTTP-200 的 SSE 错误帧。见 #83 / #69。
+- **第三条内容指纹** —— 「Relative paths resolve from the workspace root」改成过去分词形式，池车道与渠道车道同步。见 #77 / #79。
+
+### 验证
+
+- 全套 **83 文件 1057 用例全绿**；host 侧 `tsc --noEmit` 干净
+- 新增 6 个测试文件：`billion-removed` / `card-shell`（交流群）/ `channel-pool-loading` / `expert-task-family` / `free-lane-refusal` / `reserve-floor-scope`
+- 交互验证不只做源码断言：`tools/probe-card-render.mjs` 用最小 hook 调度器驱动真实 `PoolShell`，完成「点击 → 重渲染 → 弹层出现 → 二维码 8666 字符 data URI → 遮罩关闭」整条链路
+
+Refs #95 #96 #98 #99 #101 #102。
+
+## 附：CodeArts 的输出上限是上限，不是默认值（细节，已并入 2.5.1）
+
+## 2.5.0 — 十张 issue 一起收：失效账号、第三条指纹、CodeArts 上限、保存回滚、侧栏开关
+
+> #68 到 #83 攒了十来张单子，其中三张（#72/#73/#74）是同一类毛病：代码把一个「没数据」和「数据是空」当成了同一件事。这批按这个线索统一收拾，另外把社区两个 PR 收了进来。
+
+### 最要紧的三条
+
+| 症状 | 真实原因 |
+| --- | --- |
+| 一个失效账号吃掉整次请求的 8 次重试，最后报「API 密钥无效」 | 以「刷新拿到了新 token」判定账号仍可用。有一类账号 refresh 长期有效、chat 恒回 403，判死条件因此恒假 |
+| buddy 某一轮被中断后，之后每一轮都失败（`a message has empty content`） | 中断留下的 assistant 消息只有 reasoning、没有正文，序列化时空字符串被原样发到 wire，国内网关 400/11151 且不在重试集合里 |
+| zcode 全部模型勾选后，每次重启又变回全禁用 | 用户全开时黑名单是空对象，与「从未选过」无法区分，启动补静音据此又把它们全关一遍 |
+
+### #68 失效账号耗尽重试预算
+
+池车道以「刷新成功」当「账号可用」。对 refresh 长期有效而业务侧恒 403 的账号，`recovered` 与 `accessToken !== before` 恒真 ⇒ 永不 `penalizeCredentialDead` ⇒ `available()` 不排除 ⇒ `priority` 下 `acquire()` 一直返回同一个 ⇒ 8 次预算全花在它身上。
+
+改法：单次请求内只允许该账号换一次票（`refreshedThisRequest`），第二次仍报 `session_dead` 就直接判死并轮到下一个账号。压缩重试路径同步。取「第二次」而不是把惩罚提到刷新之前，是为了仍给真正过期的 token 一次机会。
+
+### #70 侧栏入口开关
+
+新增 `sidebarRow` 配置（默认开）。**只**控制左侧栏那一行：设置页的 XD Pool 卡片始终注册，模型池不受影响 —— 关掉入口不能把开关本身也锁在门外。开关写在卡片里，`apply()` 与卡片读同一份设置镜像，因此两边不会给出不同答案；宿主发布了变更通知的平台上无需重启。
+
+### #72 订阅包余额虚高 30 倍
+
+`fetchCredits` 只把 `CapacityType === 4` 当月包，而实际有三种：`1`=一次性包、`2`=**周期订阅包**（12 期 × 4000，`CapacityRemain` 是整期剩余、`CycleCapacityRemain` 才是当期剩余）、`4`=月包。`type=2` 落进「一次性」分支，整期额度被当余额。三账号实测：官方 3,399.8 / 插件 102,396 → 修复后 3,366；另两个只有月包的账号（3,049 / 2,771）不变，所以长期没被发现。
+
+`expiresAtMs` 对 `type=2` 取 `DeductionEndTime`，**不能用 `CycleEndTime`** —— 它每月都到，会让「会过期」天天报警。空包只在一次性包时丢弃，月包当期耗尽要留着显示「0/500 · 下月回满」。
+
+Refs #72。
+
+### #73 中断回合留下的空 assistant 消息
+
+`serializeMessages2` 出口加 `isBlankWireMessage` / `dropBlankWireMessages`，`serializeMessages4` 同步。三点取舍都用真实请求验证过：`user` 空消息不动（两网关都容忍）；不伪造占位内容（会污染模型看到的对话）；**有 `tool_calls` 的 assistant 消息绝不删**（它是 tool 结果的配对锚点，删了造孤儿）。
+
+实测矩阵（国内）：空 assistant 400/11151；空 system 同样 400/11151；空 user 200；`content:null` + `tool_calls` 200；删掉空 assistant 后正常 SSE。国际网关对全部形态都 200，所以故障面目前只在 buddy 车道。
+
+Refs #73。
+
+### #74 全开渠道每次重启被重新禁用
+
+`setModelDisabled` 打开模型时是**删键**而不是写 `false`，于是「用户全开」与「从未选择」在磁盘上是同一个空对象。新增持久标记 `selectionTouched`：四个用户入口（`setModelDisabled` / `setModelsDisabled` / `clearModelsDisabled` / `clearDisabledModels`）都置位，启动补静音只在标记缺失时执行，且自身写黑名单时传 `{ mark: false }` 不置位。
+
+影响面是「所有模型都打开」的渠道，目录越小越必然（zcode 2 个、gemini/minimax/raccoon 同理）；部分启用的渠道免疫，这解释了为什么只有 zcode 反复被报。
+
+Refs #74。
+
+### #75 保存模型选择后界面回滚 30 秒
+
+`saveModels` 收尾是 `setDraftFor(region, undefined)`，而它的语义是「退回池子最后报告的状态」，那份状态靠 30 秒轮询刷新 —— 于是保存后卡片画的是**保存前**的清单，用户在这 30 秒里再点一次保存，写入的就是回滚后的旧清单。另外 `settingsScope.set` 被声明成 `Promise<void>`，把宿主 revision 冲突时返回的 `false` 丢掉了，被拒绝也提示「已保存」。
+
+改法：先 `refresh(region)` 再清草稿（重读失败则保留草稿）；`set` 返回类型放宽到 `boolean | void`，`=== false` 时保留草稿、报「设置已在别处被修改」、不显示已保存。
+
+Refs #75。
+
+### #82 RPC 桥惰性解析
+
+2.4.6 的 CHANGELOG 声称这条已修，但发布产物里 `installPackRpc` 仍只捕获一次。现已改为每次 `callPack` 前 `if (packRpcBridge === undefined) packRpcBridge = resolvePackRpcBridge()`：`connection` 就绪晚于 `apply()` 时，桥不会再永久为空、退化成裸 `fetch('/api/channel-pack')` 吃 401 而让账号池整片空白。
+
+Refs #82。
+
+### 同批合并的社区 PR
+
+- **#81（[@jmglsi](https://github.com/jmglsi)）** 第三条内容指纹：`Relative paths resolve from the workspace root` → `are resolved against the workspace root`。用陈述句的过去分词形式，语义、长度、换行位置都不变，被网关字符串表收录的子串消失。
+- **#84（[@Refeain](https://github.com/Refeain)）** CodeArts 输出上限见下节。
+
+### #69 / #71 尚未定性
+
+`#69 CodeArts 提示密钥无效` 只有一句话。它至少有两条来源：本条 `InferHub.4001.200`（SSE 帧里的 200，不是 4xx）与真正的 401/403。前者已随 #83 修掉；后者需要失败时的原始响应才能确认。
+`#71 kimi k3.1 pro 没有响应` 同样只有一句话，且目录里没有 `kimi-k3.1-pro` 这个 id（有 `kimi-k3-1`）。请在 issue 里补一下：是空回复、卡住不动、还是有报错文案。
+
+### 详情：CodeArts 的输出上限是上限，不是默认值
+
+> 华为这条链接 65536 能用、131072 就空流，代码里也一直写着这个数字。但它是 `options.maxTokens ?? 65536` —— 只兜底，不设界。
+
+### 触发条件：宿主把别的 provider 的额度原样递过来
+
+宿主从模型目录里取 `maxTokens` 填进 `options.maxTokens`，而那份目录里 384000 是 deepseek-v4-pro、fireworks、huggingface 这些**真的能到 384000** 的条目的正常值。CodeArts 自己没声明上限时，这个 384000 就原样发出去了。
+
+后果不是 4xx：后端回 **HTTP 200**，把错误装在 SSE 帧里 ——
+
+```
+InferHub.4001.200 The request param is invalid, Please check it
+```
+
+适配器把它映射成 `INVALID_REQUEST`。用户看到的是「这个账号好好的，突然发不出话」，而新建会话发「你好」就失败，第一反应必然是密钥坏了 —— 这也是 #69「CodeArts 提示密钥无效」的一条候选根因（#69 正文只有一句话，无法确认是这条还是 403 那条，故 #83 里保留判断）。
+
+### 实测（2026-10-25，失败会话的原文 system/user + 全部 133 个 tools 直连，只改 max_tokens）
+
+| max_tokens | 结果 |
+| --- | --- |
+| 384000 | HTTP 200 + SSE 错误帧 `InferHub.4001.200` → INVALID_REQUEST |
+| 131072 | HTTP 200，空流 |
+| 65536 | 正常流式回复 |
+
+### 改法：三处对齐，线上请求做 clamp
+
+- `listModels()` 每个模型带 `maxTokens`，宿主没有理由再自己猜一个更大的
+- `resolveModel()` 带 `defaultMaxTokens`，`catalogFactsFor()` 会把它当 `fact.maxTokens` 交给宿主 —— 这是宿主唯一能知道上限的通道
+- 线上 `max_tokens: Math.min(options.maxTokens ?? CODEARTS_MAX_OUTPUT_TOKENS, CODEARTS_MAX_OUTPUT_TOKENS)`，调用方给更大就收回，给更小仍保留
+
+TRAE 与 Cline 早就这么做了（`clampTraeMaxTokens` / `clampClineMaxTokens`，也都写 `resolved.defaultMaxTokens`），CodeArts 是唯一的例外。
+
+- 回归：`tests/codearts-max-tokens.test.ts` 新增 5 例（源码断言，与 `tests/codearts-resign-headers.test.ts` 同形状 —— `pack.js` 是另一个仓库的构建产物，无法 import 驱动）
+- 反向对照：撤掉 `pack.js` 的补丁后 5 例全红，补上全绿
+
+Refs #83, #69。
+
+## 附：第三条内容指纹 —— 文件引用指引里的 “resolve from the workspace root”（细节，已并入 2.5.1）
+### 详情：第三条内容指纹：文件引用指引里的 “resolve from the workspace root”
+
+> 2.4.1/2.4.2 修好的两个指纹管了一周，10 月 28 日又整片 400/11128。这次被点名的不是产品名，而是一句普通说明。
+
+### 触发点在 read 工具的文件引用指引
+
+DSH 在 agent 有 `read` 工具时会贡献一段文件引用指引，开头是「Tokens prefixed with @ are paths the user explicitly referenced.」，第二句是 **「Relative paths resolve from the workspace root」**。把当次真实系统提示（约 41k 字符）整段发上去稳定 400/11128，逐段二分到 204 字符命中这段，再逐句验证：两句**单独发都是 200**，两句同现才 400；改其中任意一处小改动也 200 —— 所以这是内容指纹，不是长度规则、也不是头部规则。
+
+这也解释了为什么它看起来「不像」前两条：前两条是识别别的客户端的文案，这一条只是被网关的字符串表收进去了，句子本身没有任何产品名。
+
+### 改法：把陈述句改成同一句的过去分词形式
+
+`Relative paths resolve from the workspace root` → `Relative paths are resolved against the workspace root`。语义、长度量级、换行位置都不变，被列表收录的子串消失。同一账号上整段 41k 系统提示由 400 转 200；渠道车道与池车道同步补上，`pack.js` 的三处 `[xdpool-local]` 标记保持原样。
+
+- 池车道：`BANNED_SYSTEM_PHRASES` 增加第三行
+- 渠道车道：`vendor/channel-pack/pack.js` 的同一个 `replace` 链增加第三段
+- 回归：`tests/system-fingerprint.test.ts` 新增 5 例（含「三处指纹同现」整段用例）；`tests/chat-identity-headers.test.ts` 对已发布 bundle 的字节断言补上第三段，pack 刷新若把它冲掉会变红
+
+### 其他
+- 全套 79 文件 1028 用例（1026 通过 + 2 跳过）。
+
+### 验证
+
+- 全套 **80 文件 / 1033 用例**（含 #81 的 5 例、#84 的 5 例、本批新增）
+- `pack.js` 每次改动后 `node --check` 通过
+- server `tsc` 0 错；client `tsc` 的 6 条是既存问题（`accounts.ts` / `context-budget.ts` / `free-upstream.ts` 的 Node 类型不匹配），改前改后数量一致
+
+## 2.4.6 — 扫码账号每次打开都空白：一份数据卡在两个细节里
+
+> 2.4.4/2.4.5 之后侧栏能进、能滚了，但扫码过的渠道在账号池里经常整片空白，重开也一样。磁盘上账号是齐的（`state.json` 里 15 条），所以问题全在读取链。
+
+### 16 秒的事实抓取把首屏挡掉了
+
+`load()` 里先 `await fetchChannelModels(...)` 再 `setEntries(...)`。那次采样式采到了 **16.5 秒**——它要把每个模型逐个交给宿主适配器解析上下文窗口，冷启动时很慢。卡片区在这十几秒里是空的，看起来就像「没有账号」。
+
+改成两阶段：`provider.status` 与 `account.list` 先回来（几十毫秒），**卡片立刻渲染**；事实（窗口/识图）随后用 `setEntries(previous => ...)` 合并进去。
+
+### 失败被渲染成了「空」
+
+`provider.status` 是「哪些渠道有账号」的唯一判据。它一旦整段返回 401，`scanProviders` 就是空的，`entries` 也是空的，组件走到 `if (entries.length === 0 && error === undefined) return <></>`——**静默渲染空白，一个字都不说**。读者无法区分「还没扫码」和「读取失败」。
+
+现在把原始信封留下来判 `ok`：真的读失败就把错误显示出来。
+
+### RPC 桥只捕获一次
+
+`callPack` 必须走 `ctx.connection.rpc`（裸 `fetch('/api/channel-pack')` 被宿主 401，因为 `/api/*` 只允许经 admission 的客户端）。但 `installPackRpc(ctx)` 在 `apply()` 里只跑一次，而提供 `connection` 的是另一个 fiber——那一刻没就绪，桥就永久为空，此后所有 `callPack` 都回落裸 fetch 吃 401，正好触发上一条的静默空白。
+
+改为保存 ctx、每次调用前惰性解析，就绪后自动恢复。每一步仍各自 try：宿主给客户端 ctx 套的 Proxy 对未声明服务的属性访问会**抛异常**（并上报运行失败），`?.` 挡不住抛异常的 getter，只有 `ctx.get()` 豁免。
+
+### 其他
+- 全套 79 文件 1023 用例。
+- `tests/aggregate-probe-regression.test.ts` 全量并行时会因争抢跑到 60 秒超时，单独跑 26 秒通过——既有测试，与本次改动无关。
+## 2.4.5 — 侧栏面板能滚动了
+
+> 2.4.4 把账号池搬到侧栏那行之后，页面在折叠处被切掉、怎么都翻不到下半页。这不是新功能缺失，是我把设置页里的组件原样塞进了另一个容器，而**那个容器不滚动**。
+
+### 面板被裁切
+
+`@deepseek-ai/dsh-client-ui-layout` 把中央列样式成 `display:flex; flex-direction:column; overflow:hidden`——设置对话框自己带滚动容器，所以同一个组件放在设置里能滚动，放进主区域就只能被裁掉。现在页面外面包一层 `.dsm-xdpool-page`（`height:100%; min-height:0; overflow:auto`），由它当滚动容器；顺带补上设置对话框原本提供的内边距，否则卡片会贴着窗口边缘。设置页那条路径**不受影响**：那里宿主已经在滚，再加一层会双份。
+
+### 其他
+
+- 侧栏那行标签保持 `XD Pool`（中英文都不译）。
+
+## 2.4.4 — 扫码登录后仍显示「登录已被拒绝」，以及侧栏入口
+
+> 两个都不算新功能：一个是**我上一版自己的代码**把刚扫的凭据判成「旧的」；另一个是入口位置——账号池一直只能从「设置」里进。
+
+### 扫了码、账号池还是说「登录已被拒绝」
+
+**你看到的**：某两个账号卡片一直显示「登录已被拒绝 / 上游已不再接受这个登录状态」，提示你去 WorkBuddy 桌面端重新登录。可你的登录途径是这个插件的扫码登录，而且刚刚扫过——扫完还是那句。
+
+**真实原因**（两处，都在本插件自己的代码里，不在上游）：
+
+1. **新鲜度排序把扫码凭据排在最后**。同一个账号可能同时存在两份凭据：桌面 App 留在 `auth` 目录里的快照文件，和你扫码后由本插件铸造的凭据。`compareFreshness` 原先只认三档——桌面 live 文件、`lastRefreshAtMs`、`expiresAtMs`。扫码凭据的 `sourcePath` 是 `channel-pack:<provider>:<ref>`，既不是 live 文件名、也永远没有 `lastRefreshAtMs`，于是**无条件输给任何残留的旧快照**。它输一次，凭据就不被替换；不替换，就走不到「清除死亡标记」那一行——卡片上那句提示于是永远不会消失，反复扫码也没反应。
+
+   现在改为按来源分三级：桌面 live 文件 > 本插件扫码凭据 > 其它残留快照，同级才继续比签发时间和有效期。
+
+2. **渠道包的去重按昵称分组，会删掉刚扫进来的凭据**。本插件对渠道包做过本地补丁：同渠道同昵称视为重复条目，只保留一条。问题有两个——重扫时新凭据遇到未过期的旧条目会被当作重复删掉（连凭据一起删）；而**同一个人的两个账号如果昵称相同，也会被当成同一个人删掉一个**。本机正好有两个都叫「青楫渡」的账号。
+
+   现在改用凭据里的上游身份 `user_id` 判重，并且：认不出身份的一律保留（宁可留一条重复，也不能删掉别人的账号）；登录半成品（昵称还是生成 id、没有有效期）在比较中让位给已完成登录的条目；都可用时按 `createdAt` 留新的。
+
+### 左侧栏可以直接进账号池了
+
+账号池此前只能从「设置 → XD Pool」进。现在侧栏底部（设置按钮附近）多了一个图标，点开就是同一个账号池卡片，`Esc` 或点面板外关闭。
+
+按钮与面板是两个互不相邻的宿主插槽（`sidebar.footer.action` 与 `shell.overlay`），没有共同祖先，因此开合状态放在模块级而不是组件状态里；面板直接渲染同一个 `PoolCard`，不复制一份界面。宿主只给侧栏注册者 `{ wide }`，没有「打开设置」的接口——这也是同类插件都用自己的浮层而不是跳转的原因。老宿主缺少 `shell.overlay` 时只损失这个入口，不影响设置页。
+
+### 测试
+
+账号发现新增 3 例：扫码凭据胜过旧快照、桌面 live 文件仍胜过扫码凭据、凭据被替换后死亡标记清除；另有 1 例钉住「同昵称的两个人不会被合并」。全套 **79 文件 1023 用例**。
+
+## 2.4.3 — 渠道包补上 11128、粘性绑定跨重启、网关白名单、目录 TTL，外加 CodeArts 重签开关
+
+> 2.4.1 与 2.4.2 修的是**池车道**（`src/upstream.ts`）；这一版把同一套 11128 规则补进**渠道车道**自己那份 channel pack，并顺带解决三件独立的事：会话粘性绑定不该止于进程边界、网关页面的勾选该是真开关、远端模型目录该会过期。四个 PR 来自社区（[@GIGIGIGIbaby](https://github.com/GIGIGIGIbaby)），复核与发布由维护者完成。另附一个默认关闭的 CodeArts 重签开关（见末节）。
+
+### 渠道账号也吃 400 / 11128（PR [#63](https://github.com/XDTrees/dsh-xdpool/pull/63)）
+
+`workbuddy` 渠道在 `channels.ts` 的 `POOL_OWNED_CHANNELS` 列表里，但它**不走** `src/upstream.ts` —— 它由 channel pack 自己的 WorkBuddy 适配器应答。2.4.1 的两道内容指纹、2.4.2 的 role 转换与三个会话身份头都只加在了池车道，于是渠道账号继续吃到 2.4.2 已经替别人修好的那个 `400 / 11128`：
+
+| 项 | 渠道适配器改前 | 改后 |
+|---|---|---|
+| 首条消息 role | `developer` | `system`（就地转换） |
+| `powered by DeepSeek Harness` | 原样发出 | `running on DeepSeek Harness` |
+| `DeepSeek Harness Web GUI` | 原样发出 | `DeepSeek Harness web interface` |
+| `X-Conversation-ID` / `-Request-ID` / `-Message-ID` | 一个都不带 | 三个都带 |
+
+三处编辑各自标了 `[xdpool-local]`，配套的 `tests/chat-identity-headers.test.ts` 直接对**已发布的 bundle** 做源断言（pack.js 是外部构建产物、无法 `import`，所以只能在字节层 pin 住）—— 下次 pack 刷新若把这三处冲掉，测试会变红，而不是静默回退。
+
+### 会话粘性绑定跨过进程边界（PR [#64](https://github.com/XDTrees/dsh-xdpool/pull/64)）
+
+卡片承诺「一个会话一个账号」，但这个承诺原先止于进程边界：绑定存在一个 `Map` 里，每次重启都重新挑选，于是同一个会话一天里可能被三个账号各服务一遍，每次都按完整 prompt 计费。现在这张表写进插件状态目录（只存哈希到账号 id，不含任何消息内容），构造时加载，写入合并成一次原子 rename，并沿用与内存版相同的 LRU 上限。
+
+测试特意把会话绑到一个「默认挑选不会选中」的账号 —— 新建的空池本来就会同意未绑定会话的选择，所以「两个池答案一致」在禁用加载时也能通过；实测把加载去掉会让其中三个用例变红。
+
+### 网关页面的勾选不再是纯展示（PR [#65](https://github.com/XDTrees/dsh-xdpool/pull/65)）
+
+Gateway 页的模型勾选框与 LAN 共享列表此前只是**展示过滤器**：`/v1/models` 会隐藏没勾的模型，但请求路径照单全收。一台还留着旧模型 id 的手机、或照文档猜一个 id 的第二编辑器，就能继续拿卡片上写着「关」的模型花用户的钱。
+
+现在强制发生在**调用方实际发出的那个 id 上**，且在任何车道剥前缀或改写 body **之前**，覆盖每条车道：pool、aggregate、free、combo，以及登录渠道。列表与闸门读同一份集合——这正是让卡片上的勾选有意义的原因。
+
+### 远端模型目录会过期（PR [#66](https://github.com/XDTrees/dsh-xdpool/pull/66)）
+
+bundle 里每个适配器都把 `remoteModels` 缓存到进程结束，于是厂商改名或调整倍率要等重启才反映到卡片上——而**改名通常就是改价**，因为倍率是名字的一部分。现在由一道 TTL 闸门决定缓存能否应答，时长十分钟，可用 `DSH_XDPOOL_CATALOG_TTL_MS` 覆盖以便测试。
+
+闸门刻意**不清缓存**：加载器只在成功时覆盖，所以刷新失败会继续沿用最后一份已知良好的目录，而不是退化成一堆裸 id；网关侧 30s 的冷却又限住了重试速率。同样无需重建 lib —— `channels.ts` 在运行期按路径加载 `pack.js`。
+
+### 可选：CodeArts 请求带重签头（默认关闭，`[xdpool-local]`）
+
+在 CodeArts 的 chat 请求上追加两个头：
+
+```
+x-bili-resign: sdk-hmac-sha256
+x-bili-resign-credential: base64({"ak":"…","sk":"…","token":"…"})
+```
+
+用途是让 billion-context 用这对凭证**重签**一条它接管的 SDK-HMAC-SHA256 请求：该方案的签名覆盖请求体，压缩改写会让签名失效，而 bili 拿不到重签凭证时会按 compress-or-refuse 契约**本地拒发**（`bili_resign_unavailable`，表现为 403，再被误读成「密钥无效」）。带上这对头，bili 就能重算签名，压缩能力得以保留（billion-context 的 #1884 逃生口）。
+
+**为什么默认关闭**：`billion-context` 只在 `optionalDependencies` 里，未安装时这两个头会**直达上游**，而它们携带的是 AK/SK；另外 bili 的进程内 native client 自己会构造这两个头（`resignExtra`），xdpool 加不加都不影响它。开关留给「xdpool 直接对接 bili 代理路径」或将来需要显式携带凭证的场合 —— 启用方式是在 pool 构造时传 `codeartsResignHeaders: true`（当前没有对应的用户级配置项）。
+
+配套 `tests/codearts-resign-headers.test.ts` 用源断言 pin 住四件事：两个头名齐全、字段名与 bili `decodeApigCredential` 读取的 `ak`/`sk`/`token` 一致、插入位置在 `signRequestHuawei` 之后、以及默认关闭。
+
+### 其他
+
+- 新增测试：渠道包 11128 规则源断言、粘性绑定跨重启（含「去掉加载即变红」的对照）、网关白名单与列表一致性、目录 TTL。
+
+## 2.4.2 — 第二道内容指纹：`Web GUI` 那句，以及 assistant 历史
+> 2.4.1 之后仍有 11128。这一版补上第二道内容指纹，并把改写范围扩到 assistant 历史。修复来自社区 PR [#62](https://github.com/XDTrees/dsh-xdpool/pull/62)（[@jmglsi](https://github.com/jmglsi)），实测复核与发布由维护者完成。
+### 同一条提示词里还有第二道指纹
+2.4.1 只改写了 `You are an AI agent powered by DeepSeek Harness` 那一句的开头。把这一句改掉之后，请求仍然 `400 / 11128`，因为网关还在看提示词的另一段——介绍 Web GUI 的那一对句子：
+
+```
+You are interacting with the user through the DeepSeek Harness Web GUI
+whose URL the runtime context names. When the user refers to "this page",
+"this GUI", or "this app" without naming another target, they mean this GUI.
+```
+
+这两句是**合起来**才算的：单独发任一句都 `200`，两句凑齐就 `400`；在这对句子里做任何小改动都放行。所以这是第二道**内容指纹**，不是请求长度限制，也不是别的头。
+
+修法是把产品名后的 `Web GUI` 改称 `web interface`——保住原意的最小改动。改写清单仍是数组，这一条只是新的一行。
+
+### 被扫的是 system 和 assistant，user/tool 不扫
+同一句话放进 `assistant` 消息同样 `400`，改写后 `200`；放进 `user` 或 `tool` 则从来不管。这一条很重要：**只要历史里有一条助手回复带着这段文字，之后这个会话的每一次请求都会失败**。所以改写范围从「只改 system」扩到 system + assistant。
+
+### 实测（真实国内网关，改写前 → 改写后）
+| 请求体 | 修复前 | 修复后 |
+|---|---|---|
+| 主 agent 提示词（含 Web GUI 那对句子） | `400 / 11128` | `200` |
+| 同一对句子放在 `assistant` 历史里 | `400 / 11128` | `200` |
+| 两句合一的提示词（两道指纹同时在） | `400 / 11128` | `200` |
+| 埋进数百字长提示词中间 | `400 / 11128` | `200` |
+| 只有无关填充的长提示词（基线） | `200` | `200` |
+
+维护者复核时额外确认了一件事：DSH 当前版本真正发出的那几句（`The runtime context names the DeepSeek Harness implementation checkout…`、`… the DeepSeek Harness Web GUI at <url>.`、`Current DeepSeek Harness Web GUI URL: …`）**原样发送就是 `200`**，不触发任何检查——它们含产品名却不是模板命中的句式。也就是说命中的是句式，不是「出现产品名」；这也是为什么没有采用「把 `DeepSeek Harness` 全局替换成 `DSH`」那种更宽的改法：它会连 `D:\DeepSeek Harness\resources\app\dsh\` 这类要求模型逐字使用的路径一起改掉，而换不来任何额外的放行。
+### 同时并入的两个社区修复
+- **PR [#49](https://github.com/XDTrees/dsh-xdpool/pull/49)**（[@GIGIGIGIbaby](https://github.com/GIGIGIGIbaby)）：模型连通性探测的 `content` 改用内容块数组。宿主按 `content.some(...)` 校验每条出站消息，裸字符串没有 `.some`，探测在进程内就炸了，卡片上显示成 `content.some is not a function`——一个形状错误伪装成模型坏了。
+- **PR [#50](https://github.com/XDTrees/dsh-xdpool/pull/50)**（[@GIGIGIGIbaby](https://github.com/GIGIGIGIbaby)）：禁用按钮划过时会「消失」。`.dsm-btn:disabled:hover` 里的 `background:transparent` 优先级 (0,3,0)，压过了 `.dsm-btn-primary` 的填充色 (0,1,0)；主按钮文字是深色、为浅底设计的，底一变透明文字就看不见了。现在这条规则只保留 `transform` 部分。
+### 其他
+- 测试：新增指纹改写与被扫角色 9 例 + 运行时上下文指纹 5 例 + 探测请求形状 4 例 + 禁用按钮悬停 6 例，全套 72 文件 947 用例。
+## 2.4.1 — 11128 的真正成因：system 内容指纹
+> 2.4.0 之后仍有用户撞上 `400 / 11128 Illegal API invocation from an unapproved channel`。定位下来，2.4.0 的归因是错的，这一版修的是真原因。
+### 11128 不是身份头的问题，是 system 内容里的自报句
+网关按**内容指纹**判定「这是不是官方客户端发出来的」，命中串是 system 消息里的 `You are an AI agent powered by DeepSeek Harness`。它只匹配 `role === "system"`（放进 user/tool 不管），字面子串、大小写不敏感，且带起始位置倾向——放在提示词第一行会被拦，前面垫一行普通文字就放行。
+
+这句话由宿主的第一方插件 `@deepseek-ai/dsh-system-prompt` 固定注入，**任何未改装的安装都会 100% 命中**，与账号、密钥、渠道、UA 全部无关——这也解释了为什么它在「1 个账号失败后不再重试」：每个账号都会失败，重试没有意义。
+
+修法是在发送前把 system 里的这句改写成网关放行的同义句（`powered by` → `running on`），只动命中的文本块，图片/缓存块的引用原样透传；没命中时返回同一个引用，不为「什么都没改」付深拷贝代价。改写清单做成了数组，将来网关加句只是多一行。
+
+**实测（真实国内网关，同一账号三组对照）**：
+| 请求体 | 结果 |
+|---|---|
+| 经本插件改写 | `429 / 6004`（通过渠道校验，仅受频率限制） |
+| 原样含该句（对照） | `400 / 11128` |
+| system 干净（基线） | `429 / 6004` |
+
+### 国际网关要求首条消息是 system
+`www.workbuddy.ai` 对一个以 `user` 开头的请求体回 `400 / 11128 "first message is not system prompt"`，而**同一个请求体在国内网关是被接受的**。同一个错误码，两种完全不同成因——这正是不能只按业务码分支的原因。现在国际版请求若首条不是 system，会在最前面补一条占位 system，用户自己的消息位置和措辞一个字符都不动。
+
+### 思考档位「关闭」会被两区同时拒绝
+适配层把 `thinkingLevelMap.off` 钉成字面量 `'off'`，而 pi-ai 对「没有显式指定档位」的请求发的就是它——所以选「默认」和选「关闭」产生了同一个请求体。两区都不接受这个值：国际版 GPT 族回 `400 / 11133`（`extError.param === 'reasoning.effort'`），国内版在声明了 `onlyReasoning` 的模型上报错。现在发送前把它删掉，让上游走自己的默认档。**省略**是唯一在各个区、各个模型上都实测通过的写法；换成字面量 `'none'` 不是安全替代。
+
+**实测（真实双网关，同一账号前后对照）**：
+
+| 请求 | 修复前 | 修复后 |
+|---|---|---|
+| 国际版，首条为 user | `400 / 11128 first message is not system prompt` | `200` |
+| 国际版，`reasoning_effort: "off"` | `400 / 11133 extError.param=reasoning.effort` | `200` |
+
+### 免费模型限流提示：说清配额是按会话算的
+免费车道的拒绝原文是「the provider asked to wait 74558s」——二十小时，读起来像是整个免费车道被封了。实际配额**按上游会话计**，换一个会话（或换一个模型）就另有一份额度。现在限流错误的文案补上了这一句；只有限流类错误带这句，凭据失效、模型不存在之类加上去只会引导用户去做无用重试。
+### 其他
+- 测试：新增 system 指纹改写 8 例 + 区域专属请求体规则 12 例 + 免费车道会话配额提示 1 例，全套 71 文件 932 用例。
+## 2.4.0 — 会话身份头、清单不再冻结、中文路由可存
+> 这一版收的是「用着用着就报错」的那一类问题：调用被网关判成非法渠道（11128）、国际版模型清单永远停在启动那一刻、中文名字的路由点了保存却没存下、上下文选择一选就弹回去。
+### 会话身份头：补齐官方客户端的契约
+网关对「这一轮对话属于谁」有一组身份头。补齐官方客户端的契约：
+- **会话稳定三头**（同一会话内不变）：`X-Conversation-ID`、`X-Conversation-Request-ID`、`acp-connection-id`。
+- **每请求两头**（逐次随机）：`X-Conversation-Message-ID`、`X-Request-ID`。
+- 另附 `X-Agent-Intent`、`X-Agent-Purpose`、`x-codebuddy-request`、`X-Private-Data`、`X-Product` 与 W3C/B3 追踪族。
+
+> **口径更正（见 2.4.1）**：本版曾把 `400 / 11128` 归因于「缺会话身份头」。这个归因是错的——实测国内网关根本不检查这组头（不带任何身份头、system 干净时正常放行）。身份头照官方契约补齐没有坏处，但 11128 的真正成因是 system 内容里的自报句，已在 2.4.1 修掉。
+
+顺带修掉同源的一处：`role: "developer"` 的消息在国内网关同样触发 11128，现统一上送为 `system`。
+### 国际版模型清单：不再冻结在启动那一刻
+`createProvider` 的 `models` 是在创建 provider 时快照下来的数组，而原来的 `invalidate()` 只重排了 profile、复用了同一个 provider 对象，宿主按对象身份记忆化 `current()`，于是**新拿到的模型清单永远送不到选择器**——表现是「重新获取模型」点了没反应、国际版清单停在开机那一刻。现在每次 `invalidate()` 重建 provider 与 profile 两个对象，并通过 adapter handle 的 `replace()` 重新登记路由，由宿主自己发出 `llm/adapters-updated`。
+（附带核查：国际版本来就有独立的 `modelSelectionGlobal` 键，与国内白名单分开读写，这一处无需改动。）
+### 中文路由名现在存得下
+链名 slug 原来是 `[^a-z0-9]+ → '-'`，中文名整串被压成空 id，规范化时被当作无效条目静默丢弃——于是「保存成功」但什么都没存。改为 Unicode 感知的 slug（`\p{L}`/`\p{N}`），拉丁名形态完全不变，已存的路由 id 继续可解析。
+### 上下文大小：选中态不再一选就弹回
+渠道卡把「从未保存过预算」当成了「已收窄到 200K」显示，用户点「完整」清空预算后该行又算回 200K，选中态立刻跳回第一项。现在未保存过预算就显示完整窗口；清空预算时同时保留 `nativeContextWindow`，radio 组不会在指针底下消失。
+### 思考档位：不再只认一档
+pack 兜底表把十几个模型的 `reasoningEfforts` 写成了单档（`["medium"]` / `["high"]`），于是国际版 `Deepseek-V4.1-Flash` 只能选 High。逐模型实测（两网关、五档全跑）后按真实能力补齐：凡是能调通的模型五档都接受、且各档 `reasoning_content` 长度不同。`gpt-5.3-codex` 五档皆 200 但 reasoning 恒空——档位合法而不可观测，已经在表里注明；`gemini-3.5-flash` 与 `primary-model` 的 400 是账号套餐权限（`model [X] is not allowed for user type [personal]`），与档位无关，未动。
+### 重复账号：同一个人不再显示成两个
+桌面端凭据同时带数字 `uin` 与 UUID `uid`，扫码渠道只带 `uid`，而账号 id 是按 `uin` 优先哈希的——同一个人走两条登录路径就整出两个池条目，各自带一部分模型。现在按 `uid` 建次级索引合并到同一个池条目，既不改哈希（否则全部冷却、失效标记、忽略名单、持久化快照一次性作废），也与凭据到达顺序无关。
+### 「重新检测账号」不再静默失败
+`listAllAccounts` 漏了 `await`，拿到的是一个 Promise，随后的 `.filter` 抛 `is not a function` 并被外层 try/catch 吞掉，表现是扫码账号全部并进池、重新检测永远没结果。
+### 其他
+- 测试：新增会话身份头与中文路由名的回归用例，全套 68 文件 910 用例。
+## 2.3.0 — 扫码渠道接入账号池，免密车道修复，数据看板有了真数
+> 这一版收掉三件大事：扫码登录的账号真正归入账号池并按渠道展示；免费模型车道跟上上游的新校验、不再动辄 403；数据看板不再是一排零。
+### 账号池：扫码渠道按渠道入池、逐模型可控
+**账号池页新增了扫码渠道卡**。此前扫码登录页加的账号游离在账号池之外——账号池只认 WorkBuddy 桌面端登录的账号，扫码加进来的十几个渠道账号在池里没有一席之地，模型开不开、哪个开，全靠猜。现在每家扫码渠道在账号池页有一张自己的卡：账号列表（昵称、启停、到期、余额）、模型列表（逐个勾选启用、免费/失效标签、上下文大小选择）、每日签到与积分领取。改动即时生效，不必点保存。
+配套的 RPC 通道一并补齐：前端与扫码渠道后端之间的账号、模型、积分、启停等请求全部走同一封装（`channel-rpc.ts`），新增 `model.setDisabledMany`、`model.setContextBudget` 等方法，保证卡片上看到的和后端真实状态一致。
+**重复账号自动清理**：同一渠道反复扫码不再攒出一排半成品账号——按「可用性」保留（长期凭据优先于临期凭据），其余清掉，日志里写明留了谁删了谁。
+### 停机补偿：自动领取
+WorkBuddy 侧偶发的模型服务异常会按账号补偿积分（在网页「用量」页顶部领，过期作废）。现在自动任务多了一项「停机补偿」，默认每天下午检查一次，有就领、领完记账，账单里能看到「补偿 +N 积分」。
+### 免费模型车道：跟上上游的客户端校验
+免费模型上游在 10 月中旬收紧了两道校验，旧版几乎每次调用都撞 403：
+- **会话 id 编码**：上游要求会话 id 按规范的降序时间戳编码（低 12 位落在固定区间），旧实现用哈希摘要当前缀，合规概率只有约 1.5%。现在改为确定性派生规范 id——同一会话稳定映射到同一上游会话，配额不会被反复消耗。
+- **客户端指纹**：请求头、路径、工具声明的形状全部对齐当前 CLI 客户端（v2 形状），并用真实网关验证过：免费模型能正常返回内容，超限时明确报限流而不是 403 拒绝。
+### 数据看板：不再是一排零
+免密通道的调用此前从未接入用量记录器，看板上免费模型的调用数恒为 0、重启即清空。现在每次调用（无论成败）都会记录请求数、轮次、首字延迟、生成速度；Token 总量取决于上游是否回传用量帧，不回传时如实显示「未上报」而不是编一个数。
+### 其他
+- 聚合渠道页的模型按「免费优先、上下文窗口、识图能力」排序；能力未知的模型如实留空，不编造窗口数字。
+- 渠道卡模型行在模型较多时提供搜索框；按钮配色统一为中性色，hover 有扫光动效。
+- 重复的登录入口合并；「已添加 N 个账号」的计数修正为去重后的真实数量。
+- 新增 5 个测试文件（免密车道闸门、扫码账号接入、RPC 方法清单、模型选择、客户端 bundle 纯净度），全套 68 文件 895 用例。
+## 2.2.1 — README 已知限制描述更正
+纯文档修正：README「已知限制」里写着池「没法替你发起登录或扫码」——这是改名前的旧描述。现在的 XD Pool 有扫码登录页，可以为自己十三家渠道发起扫码登录；WorkBuddy 本体的 token 仍由桌面 App 的腾讯 SSO 铸造并绑定设备，这条限制保留但改成了准确的说法。代码无变化，发布这一版只为让 npm 页面的 README 跟上。
+## 2.2.0 — 账号池重启不再失忆，CLI 修好，快照真正回读
+> 群友报的三个问题一起收掉：重启 DSH 后账号池只剩当前登录账号；`dsh-xdpool` 命令行任何子命令都报 `ERR_MODULE_NOT_FOUND`；`import` 写进去的快照写了就忘，永远读不回来。
+### 重启后账号还在：账号池持久化
+**现象**：在桌面端来回切换登录，攒了一池账号；重启 DSH，池里只剩当前登录的那一个。
+**根因**：账号池的账号列表是纯内存——`scan()` 只合并不落盘。而上游桌面端在磁盘上只保留**当前登录**的凭据文件（每次登录覆盖同一个文件），所以「重启 = 磁盘上有什么就是什么」，磁盘上永远只有一个。
+**修法**：新增 `account-store.ts`，池的扫描从 `~/.dsh/.xdpool/accounts.json` 播种、每次扫描后原子回写（先写 `.tmp` 再改名，崩溃不会留半个文件）。桌面端只记得最后一次登录，池子自己记账。生产入口（宿主和 CLI 共用的 `createCore()`）默认开启；测试构造的池默认关闭，不会把 fixture 写进真实目录。
+### `import` 的快照终于有人读了
+`dsh-xdpool import` 一直把 `<md5前8>.json` 快照写进 `~/.dsh/.xdpool/`，但**没有任何代码路径读回它**——写了就忘。现在插件数据目录本身就是一个扫描源，快照里的每个凭据都会在下次扫描时收进池子；插件自己的状态文件（`accounts.json`、`ignored.json`、`preferred.json`）明确排除，绝不会被当成凭据解析出幻影账号。
+### CLI 能跑了
+`lib/bin.js` 顶部带着四个打包时从 `index.ts` 一路带入的副作用 import（`@earendil-works/pi-ai` 等 optional peer），绑定里零引用——后果是所有 CLI 子命令直接 `ERR_MODULE_NOT_FOUND`。这四个包改为 external（源码里本来就没有绑定引用），`bin.js` 加载即净，只有命令真正走到 adapter 才会解析。
+### 文档对齐
+README 里「历史登录快照」的四处描述与实际行为不符，一并改写为如实口径：桌面端只保留当前登录，池子自己把攒到的账号持久保存到 `~/.dsh/.xdpool/accounts.json`，重启不丢；`import` 快照同目录，每次扫描收进池。
+## 2.1.1 — 修掉两个用户看得见的 bug
+> 一个让你在插件清单里看到一条失败的红条目，一个让你的账单上「使用端」是空的。都是 2.1.0 之前就存在的，这一版一起收掉。
+### 插件清单里那条 failed 的 billion-context,没有了
+**现象**：装了 billion-context 的用户会在插件清单里看到两条指向同一模块的 entry——`bili-native`(正常)和 `billion-context-xdpool`(**fiber failed**)。不影响功能，但那条 failed 是用户看得见的，而且没人能解释它为什么在那。
+**根因**：2.0.0 想让没装压缩器的用户也能用 billion 页，于是插入了那条挂载行。但 billion-context 会在 cordis 里注册自己的服务，同一个服务注册第二次会被宿主直接拒绝——先到先得，后来那条的 fiber 就地死亡。2.0.0 的注释里写的是「宿主会禁用重复行」，实测**不会**。
+**修法**：这条挂载行整个撤了(改成 `disabled: true` 留个可寻址的记号)，`billion-mount.ts` 里的运行时 `create()` 也一并删除——两处只删一处，另一处还会打架。`billion-context` 同时从 `dependencies` 挪到 `optionalDependencies`,兑现注释里一直写着的承诺：**装不装压缩器，是用户的决定，不是池子替用户做**。
+billion 页本身不变：没装显示「没装」，装了显示数据——三个状态本来就是分开的。
+**顺带修的两个判断错误**(改判断逻辑时暴露的):
+- `loader.entries()` 会返回被禁用的行，宿主只是不启动它们，不是丢弃。不排除的话，没装 billion-context 的用户会被我们自己那条 disabled 行误报成「已安装」
+- fiber 为空的 entry(正在导入)以前被当成「不存在」——那是在「我们负责挂载」的前提下才对；现在只读状态，它就是「已安装」
+### 账单后台的「使用端」不再是空的
+**现象**：从 1.8.4 起，插件发的聊天请求在账单后台的「使用端」一列是空的；同一个账号在 WorkBuddy 桌面端聊天就显示「WorkBuddy」。积分照扣，纯归因展示问题。
+**根因**：网关按请求头里的 `X-IDE-*` 识别客户端。桌面端带，我们没有——而插件自己的积分自动化链路(`openConversation`)**早就带了**，这就是为什么只有主聊天链路归因不出来。
+**修法**：把三个头(`X-IDE-Name/Type/Version`)提成一个常量，主聊天的两条路径(`completeChat`/`chatStream`)和 `openConversation` 共用同一份——以后不会再漂移。**没有**放进共享的 `chatHeaders()`:那个函数还被积分自动化的任务接口共用，那些不是聊天接口，乱带身份头有归因风险。
+### 其他
+- README 换掉一张 1.8.x 时代的旧截图，补一张账号积分详情
+- 账单里合计积分和各积分包的数字改成和「每日 +100 积分」一致的亮绿(以前是灰色，看起来像已花掉)
+- 下载量徽章换成静态快照(shields 的实时 npm 徽章被上游限流，时好时坏)
+## 2.1.0 — 改名 dsh-xdpool
+> 插件已经不是「一个 WorkBuddy 账号池」了，名字里带着 workbuddy 反而说小了它。这一版把名字改成 `dsh-xdpool`，并且把旧数据自动接过来。
+### 为什么改名
+2.0.0 把插件做成了七页：账号池、扫码登录、聚合渠道、数据看板、billion-context、路由、网关。它管的东西早就超出了 WorkBuddy——76 家厂商的免费额度、十三家的扫码登录、一个本地网关。名字里锁死 `workbuddy`，等于每次介绍它都要先解释「虽然叫这个，但它不止干这个」。
+所以这一版把**所有名字**一次改齐：
+| 旧 | 新 |
+| --- | --- |
+| npm 包 `dsh-workbuddy-xdpool` | `dsh-xdpool` |
+| provider id `workbuddy-xdpool` | `xdpool` |
+| provider id `workbuddy-xdpool-global` | `xdpool-global` |
+| provider id `workbuddy-xdpool-aggregate` | `xdpool-aggregate` |
+| provider id `workbuddy-xdpool-free` | `xdpool-free` |
+| 数据目录 `~/.dsh/.workbuddy-xdpool` | `~/.dsh/.xdpool` |
+| 设置命名空间 `workbuddy-xdpool` | `xdpool` |
+| CLI 命令 `dsh-workbuddy-xdpool` | `dsh-xdpool` |
+| 显示名 `DSH WorkBuddy XD Pool` | `DSH XD Pool` |
+`workbuddy` 作为**产品名**的地方一个没动——账号池合并的还是 WorkBuddy 桌面 App 的登录状态，那些字符串是描述事实，不是品牌。
+### 你的数据不会丢
+插件自己的目录改名了，所以启动时会把旧目录**复制**到新位置——你填过的第三方 API key、忽略名单、账号 pin、启动日志，全都在。
+**只复制，不删除。** 这不是偷懒，是有意的：把旧目录改名（rename）固然更省事也更原子，但一旦你退回旧版本，或者两个版本在同一台机器上并存，旧的那份会发现自己的目录凭空消失。复制多花几 KB，换来两条路都走得通。
+**新目录里已有的文件不会被旧文件覆盖。** 按文件名逐个判断：目标已存在的跳过。这样即使新旧目录都有内容（比如你先在新版里填了一个 key，又装回了旧版填了另一个），升级不会把新写的值冲掉。
+### 有一处插件帮不了你，但它会告诉你
+**如果你的「默认模型」指向旧 provider id**，它不会自己变。那个 id 存在宿主的 `settings.yaml` / `cordis.patch.yml` 里——是宿主加载这个插件的配置文件。让插件去改它，等于插件改自己的加载器配置，这种自我修改的安装方式我们不做。
+所以插件把这件事**写进启动日志**（`~/.dsh/.xdpool/startup.log`）：每一次启动都会记一行，列出四个旧 id 到新 id 的对应关系，以及该改哪两个文件。忘了改，看日志就知道确切该动哪里。
+改动只有两处、各一行：
+```yaml
+# ~/.dsh/profiles/desktop/home/settings.yaml
+agent-default-model:
+  provider: xdpool        # 原来是 workbuddy-xdpool
+```
+```yaml
+# ~/.dsh/profiles/desktop/cordis.patch.yml
+- id: agent-default-model
+  config:
+    provider: xdpool-global   # 原来是 workbuddy-xdpool-global
+```
+### 另一处小修
+客户端 bundle 顶部那个 `__ModuleLoader__.load({ id: … })` 的注册 id 之前是手写在构建配置里的，这次跟着包名一起改齐了。宿主按**包名**索引客户端模块（`reconcilePackage` 以 packageName 为键建 graphRow，浏览器端 `register` 用注册 id 反查那一行），所以这个 id 必须等于包名——以前两者恰好一致，改名后就不再自动一致了，这里把它钉死。
+## 2.0.0 — 重大更新！！！
+> 这是 XD Pool 从「一张设置卡片」变成「一个多页面的插件」的那个版本。账号池还是那个账号池，但它周围长出了六个新页面。
+### 先说这一版为什么叫 2.0
+1.9.0 之前，XD Pool 只有一个界面：一张卡片，从上到下把所有东西堆在一起。账号、积分、模型、签到、自动化，全挤在一屏里，越加越长。这一版把它拆成了**七个页面**：
+| 页面 | 干什么 |
+| --- | --- |
+| **账号池** | 本机 WorkBuddy 账号、池健康、用量、积分自动化——原来那张卡片 |
+| **扫码登录** | 十三家支持网页 / 扫码登录的厂商，登一次，它们的免费模型就进选择器 |
+| **聚合渠道** | 76 家厂商的免费额度接进同一个模型池 |
+| **数据看板** | 今天的用量：轮次、调用、失败、换号救回、token、缓存命中、速度 |
+| **billion-context** | 只读观测本机 billion-context 压缩器的运行状态 |
+| **路由** | 把多个模型串成一条链，按顺序或轮换使用 |
+| **网关** | 把池子开成本地 OpenAI 兼容接口，可转发给局域网其它设备 |
+顶部是品牌栏：头像、`XD Pool`、版本号，右边一个跳转到仓库的星标按钮。七个标签用一条会滑动的光带指示当前位置。
+![账号池：顶栏显示 XD Pool 与版本号、七个页面标签、用量面板在页面最上方、下方是 WorkBuddy 国内版账号卡与「已接入」状态](assets/account-pool.png)
+### 用量面板挪到了最上面
+1.9.0 把它放在卡片中部，你得往下滚才看得见。现在它是账号池页的**第一块内容**——你打开这个页面十次有九次是想看它还活着没有、今天花了多少，那它就该在最上面。
+### 扫码登录：十三家厂商，登一次就够
+这些厂商各自有网页或扫码登录，登进去之后它们的免费模型就出现在模型选择器里。这一页是**通道**，不是账号池——两边管的是不同的东西：账号池管 WorkBuddy 自己的号，这一页管别家的免费额度。
+![扫码登录：十三家厂商列表，CodeArts 华为云、WorkBuddy 国内版与国际版各带说明与登录按钮](assets/login-channels.png)
+十三家的名单来自一个被逐字节 vendored 进来的 `channel-pack`（和 `dsh-our-free-model` 用的是同一份，SHA256 相同）。这里有个已知情况要说明：**如果那个插件也在跑，它已经注册了同一条 `/api/channel-pack` 路由**，而宿主对重复路由是直接抛错的。我们没法预检（宿主只暴露 `register`，没有查询接口），所以做法是**让位**——检测到是路由所有权冲突就安静退出，页面显示「这些扫码登录通道已经由另一个插件接管了」，而不是报一个你根本看不懂的错。两边服务的是同样的十三家，功能上没有损失。
+### 聚合渠道：76 家厂商，按分类筛
+![聚合渠道：聚合开关、搜索框、全部分类 76 / API Key 60 / 免费 1 / 有免费额度 10 / 本地 3 / 需授权 2 的分类筛选](assets/aggregate-channels.png)
+76 家厂商分成六类：API Key 60 家、有免费额度 10 家、本地 3 家、需授权 2 家、完全免费 1 家。
+**默认一家都不开。** 这不是保守，是这一页唯一诚实的默认值：76 家全亮着，你唯一配好的那家和另外 75 个空壳长得一模一样，等于没有信息。判定规则是——显式开关优先；没有显式开关时，**只有已经填了可用 key 的厂商算开**（填 key 这个动作本身就是「我要用它」）。卡片上的开关和模型选择器读的是同一个谓词，所以两处不可能不一致。
+每张卡片可以点开，里面是 key 输入框、endpoint、官网链接和这家能出的模型。填完保存后会保持展开，方便你接着填下一家。
+### 数据看板
+1.9.0 把用量账本做出来了，这一版给它一个正式页面：五个 KPI（token、轮次、速度、缓存命中、调用数）+ 明细表。
+有两条口径写在这里，免得以后被当成 bug 报回来：**累计数永远读 history 的总数**，不是把今天的分片加起来——一个半夜归零的「累计」是假的；还有**一轮提问 ≠ 一次调用**，中间换过号的话后者会更大，两个数分开摆，谁也不冒充谁。
+### 路由：把几个模型串成一条链
+一条链可以按 `fallback`（从头试到尾，每轮都从头开始）或 `round-robin`（按顺序轮换，可以用 `stickyLimit` 指定一个成员连续服务几轮）来走。链里的成员可以来自池子，也可以来自别处。
+**指向已经失效成员的链不会被删掉，只是标出来。** 你有意留着的那条链，比我们自作主张帮你清理更值钱。
+### 网关：把池子开成一个本地接口
+在 `127.0.0.1:8326` 上开一个 OpenAI 兼容的接口，可选监听 `0.0.0.0` 转发给局域网其它设备。带上转发跳数标记防止自己绕回自己，key 随机生成。
+### billion-context 页是只读的
+这一页**只观测，不配置、不启动、不内嵌压缩器**。它读本机 billion-context 的运行状态，没装 / 没应答 / 就绪三种情况分开显示——「它没在跑」和「它跑了但我们问不到」是两件事。
+### 其余
+- 品牌名统一成 **XD Pool**（只改显示名；包名和 provider id 没动，动了等于换插件）。
+- 顶部星标**只是跳转链接，不解锁任何功能**。文案里不会写「点星解锁」这种话。
+- 猫猫旅行和积分自动化一行没动，还在原来的时间点跑。
+- 宿主加载器的一处报错修好了：用 `pathToFileURL` 构造 pack 入口，路径里有空格或中文也能起来。
+## 1.9.0 — 一张会说真话的用量小票
+> 你其实一直知道自己今天问了几个问题，只是不太确定我们替你换了几个号去问。现在能看见了。
+### 之前那笔账丢在哪了
+这不是新加的统计，是把**本来就在算、算完就扔**的一笔账捡回来。
+每次 DSH 把请求交过来，我们要把它翻译成 WorkBuddy 认识的样子。其中有个参数叫 `stream_options`，里面有一句「顺便告诉我这次用了多少 token」。我们以前的做法是：**把这句删掉再发出去**。
+删它不算错——多要一样东西，就怕上游多回一帧我们不认识的数据，那帧要是原样塞回给 DSH，保不齐会出问题。只是这个顾虑悄悄付了一个代价：网关从此永远不告诉我们 token 数，所以我们也就永远不知道你今天聊了多少。
+现在反过来做：**要，然后自己把那一帧摘掉**。发给 DSH 的流，和你没开这个选项时**一个字节都不差**；那串数字在我们这边落地了。
+### 摘的时候必须非常小心
+上游有两种可能：老老实实单独发一帧「这是账单」；或者**顺手把账单塞进最后一个有内容的帧里**。第二种要命——那一帧是你的回答，摘掉等于把你刚看到的那句话删了。
+所以规则写得很死：**只有「除了 usage 什么都不带」的帧才摘**；带着内容的帧一个字都不许动，包括里面那个 usage 字段。面板算出来的账因此和网关说的对得上，而不是我们单方面把它减掉了。
+还有一处我们特意没偷懒：切分帧的时候按**原始字节**来，绝不先解码成文字再重新编码。中文、日文、emoji 都可能在切分那一刀被劈成两半，劈开再拼回去会变成一个问号方块——那是你能看见、日志看不见的坑。
+### 一轮提问 ≠ 一次调用：这两个数得分开摆
+假设你问了 8 个问题，第一个问题的路上撞上限流，我们悄悄换了个号重试，换完还是撞，再换一个才成。那么：
+- 你提问了 **1** 次；
+- 网关被调用了 **3** 次。
+以前我们打算给面板一个数字，画成什么样都有人不高兴：写 1 次，那 3 次白跑的账凭空消失；写 3 次，你看着自己只问了 8 个问题却显示 24 次调用。现在两个数分开摆，谁也不冒充谁。
+「失败」同样拆成两种：**全部账号都失败**（这轮你真的没拿到回答）和**换号救回来了**（中途失败过，但你压根没察觉）。后者我们单独标出来，因为它其实是好消息。
+### 面板上有什么
+- 每个模型一行：输入 / 输出 token、其中多少是**缓存命中**、每秒吐字速度、第一个字等了多久、失败了几次；
+- 顶部一行总数：多少轮提问、多少次调用、多少轮失败、多少轮靠换号救回。
+### 两句必须说清楚的话
+**第一句：网关可能不报。** 有的上游理会这个参数，有的当没看见。所以面板有一条专门的提示——**「网关尚未上报 token 数」**。这时候我们说「不知道」，而不是显示一个漂漂亮亮的 `0`。「你没花 token」和「它没告诉你」是两件事，混起来就是在撒谎，而这是这张小票唯一不能犯的错。
+**第二句：重启之后这些数字就没了。** 它们只存在内存里。我们没往磁盘写——写下来的是「你每次问了什么」，那是你的聊天记录，不该被一张账单偷偷复制一份。想要长期账目，请看 WorkBuddy 自己的消费页面。
+面板只保留最近的 2000 次调用，够你看出最近的节奏，不够你拿去报账。
+### 它不跟着「国内版 / 国际版」那个 tab 过滤
+面板显示**两个网关的全部调用**。这不是偷懒，是有意的：如果按 tab 过滤，你在「国内版」那一栏上只看得见一半的调用，而顶部总数却是全部——两个数字当场对不上。所以每一行都自己带着地区标记，自己会告诉你这数是哪边的。
+## 1.8.4 — 让模型自己说它什么时候免费
+> 这次去把国内版和国际版的模型清单重新数了一遍，发现三个问题：内置的旧清单已经过时；上游其实在用一种我们完全看不懂的写法宣布活动（写了，然后被我们扔掉）；还有一个更隐蔽的——国际版的离线清单里，混进了国内版的中文活动文案。
+### 先把清单数对
+之前那几张是「先有个大概，回头再说」的旧账。现在每一行都照着上游接口抄了一遍，连窗口大小都照抄。
+- 国内版实测 17 个，比原来多一个叫 `space-bunny` 的（`x0.08`，窗口 100 万）。
+- `hy4-preview` 的窗口之前写 1 000 000，上游说 960 000。差的这 4 万不是小事：插件会拿窗口算「这条会话还能塞多少」，比真实值多报 4 万，就等于规划出一个上游转头拒收的请求。这正是 1.7.3 那次要治的病。
+- `kimi-k3` 这个 id 上游早就不用了，现在是 `kimi-k3-1`。
+另外你可能会问「视频号上说现在有 claude-sonnet-5.5 了」。我们也是这么想的——**两个网关都没有 Claude 系**。你听到的大概率是 `gpt-5.5`。所以这个不是缓存问题，重刷一百次也刷不出来。
+### 上游其实在写「限时免费」，我们把它的字扔了
+国内版的模型清单里，每个模型可以带一串标签。上游在其中写了活动的说明，长这样：
+`badge:限时免费:#FF0000`　`badge:夜间免费:#FF0000`　`badge:夜间折扣:#1E90FF`
+以前我们读这串标签，用的是一套自己发明的词汇表（`free`、`limited-free`、`night-discount`）——**上游从来没发过这三种写法里的任何一种**。所以每一次活动声明都被读了、然后丢掉，被打了活动标签的模型在界面上跟收费模型长得一模一样。
+现在改成直接读上游写的那句话，一个字不改地显示出来。这么做还有个别的好处：上游哪天把「限时免费」改成别的说法，界面自己就跟着变，我们不用去猜它什么意思。
+### 两个由此暴露出来的连带问题
+**一、「限时免费」被显示成了干巴巴的「免费」。** 免费是免费的，但「限时」两个字恰恰是最要紧的那半截——它会过期。把这两半揉成「免费」，等于把有效期藏起来了。现在显示上游原文。
+**二、界面说你免费，排序却不认。** `hy4-preview` 上游挂着「限时免费」，价格却是 `x0.29`。以前排序只认「倍率为 0」，所以这一行顶着一个免费徽章，却排在底下收费模型的后面。徽章和排序自己打架。现在排序也读这个标签。
+顺带修了个更危险的：`glm-5.2` 的标签是「夜间折扣」，`x0.79`——**折扣，仍然要花钱**。它该显示（上游写好的话没理由藏起来），但绝不能被算成免费。把「有标签」和「有免费标签」分开，就是为了让这种事不会再滑过去。给假免费比不给标记更糟：那会让人放心用，然后被扣积分。
+### 国际版的离线清单，不该出现国内活动
+两个网关的模型清单一直共用同一张内置表。这次上游的标签开始被解析之后，问题就藏不住了：国际版如果恰好拉不到清单、回落到内置表，那几行国内活动的字就会**原样出现在国际版模型上**——一个那个网关根本不提供的活动，摆在你面前。
+现在国际版的内置表会把国内活动标签摘掉。其余内容两个版本仍然共用：国际版实测 25 个模型，我们只完整记下了倍率和窗口，凭记忆补齐其余字段等于往你面前塞编造的内容，不值得。
+### 两件我们没做，并且想说明为什么的事
+**没有「免费到 X 月 X 日」。** 你提过想看到这个。我们查过了：上游的标签只有一句话和一个颜色，**没有日期**。自己编一个日期看着很贴心，实际后果是——活动万一延期或者提前结束，你会以为还能白用，然后积分被扣。所以这一项我们没做，只显示上游写的那句话里已经有的信息。
+**没有「你的 14 天新人额度」。** 上游的接口里没有任何字段能告诉我们「这个账号用过没有」。本地记你第一次调用 Hy4 preview 的时间也不行——那只能知道你**用了插件之后**的时间。曾经直接在官方客户端用过的人，本地记不出来，我们会给他显示一个假的「免费」。同上一条，假免费比不给标记更糟。
+## 1.8.3 — 快过期的积分先花掉，失效的登录别再刷屏
+> 这一版有两件事。一件是新的第五种账号使用方式：让积分包最快过期的那个账号先上，别把积分放过期了。另一件是修一个看着很吓人的毛病——账号失效之后，卡片上会顶着一大段英文，把整个面板撑爆，而且每刷新一次就再撞一次墙。
+### 新增：第五种模式「先花快到期的」
+积分有两种：**月度包**每月自动刷新，永远不会过期；**一次性包**有明确截止日，到点没用完就归零。以前插件不知道这个区别，轮着用谁都是随机——结果就是某个账号的一次性积分包在角落里静静过期，而你还在用另一个账号刷。
+现在多了一个选项：**优先使用积分包最快过期的账号**。
+- 数据直接来自上游本来就返回的 `nearestExpiryMs` 字段，**没有为这个模式多发任何一次请求**。
+- 月度包不参与排序——它不会过期，算它「紧急」纯属瞎紧张。
+- 没读过积分的账号排在最后。理由很简单：「没看过」不等于「有截止日」，拿未知去压真实截止日是错的。
+- 积分花完或过期之后，那个截止日会被**擦掉**，不是一直记着。否则池子会死死钉在一个积分已经空了的账号上，跟这个模式的目的正好相反。
+- 读不到任何到期信息时，行为退回「优先」模式。放心开。
+默认仍然是「优先」，没有偷偷改任何人的设置。
+### 模式选择换了排版：五个并排，说明放下面
+第五个模式一加进来，原来那个「两列网格 + 最后一个跨整行」的排版就散了：五个格子掉成两行，最后一个还孤零零撑满一行，看着像掉出了网格。
+现在改成**一行可换行的芯片**：
+- 面板放得下的时候，五个模式**一行排开**，宽度自动均分。设置面板常见的 700px 宽度也还读作一行选择，而不是在 760px 处突然塌成两列。
+- 真的放不下了才换行，换行后最后那个会自动撑满整行——这是 flex 的天然行为，不需要任何「最后一项跨行」的补丁规则，也就不会出现「明明第一行还装得下、却把第五个挤到第二行」的怪事。
+- 每块芯片里**只剩模式名**。五句话塞进五个小方块会让选择器变成五段散文，所以说明改成**行下方一行字，只讲当前选中的那个模式**。
+### 修：网关 401 不再打印一整段英文
+有人的卡片上，三个失效账号每个都顶着这么一段：
+```
+the WorkBuddy gateway rejected this credential (http 401). This usually means
+the account is using a stale sign-in the upstream no longer accepts: sign in
+again in the WorkBuddy desktop app, then pick the account on the plugin card.
+Run `dsh-xdpool doctor` to list every credential found.
+```
+话说得没错，但**它出现在面板正文里**，三个账号就是三段，把卡片撑到没法看。
+现在：
+- 这段文字折叠成一个**红色短标记**，完整原文进鼠标悬停提示。要看细节还在，不想看的时候不占地方。
+- 更关键的是**它现在真的会被当成「登录已失效」**。以前只有「刷新 token 被拒」才会判死，而如果凭据文件里写的过期时间还在未来，刷新那一步根本不会跑——于是每次卡片刷新都老老实实再撞一次 401，撞完再显示一次红字。现在只要**网关返回那段 HTML 拒绝页**，就按失效处理：账号进冷却、退出轮换。
+- 失效的账号**不再多吃一次签到探测**。以前每个死账号刷新时会被打两次（积分一次、签到一次），现在只打一次——签到那步直接跳过。
+- 会**自我纠正**：只要某次积分读成功了，就说明登录其实是好的，死标立刻清掉。不用手动点任何按钮。
+### 关于那三个账号
+顺带说一句：本机实测那三个报 401 的账号**是真的失效了**，不是插件误判——强制刷新时上游明确回 `session_dead (http 401): 12153:refresh token is invalid`。要恢复它们，去 WorkBuddy 桌面端重新登录，再回卡片点「重新检测账号」。
+## 1.8.2 — 免费的那个被限流了，旁边那个收费的同款还能用
+> 免费模型被限流的时候，插件以前只会说一句「所有账号都在冷却」。这句话没错，但它让用户以为自己只剩一条路：等。其实同一个模型往往还有一条**收费的**产品行，而且在限流器眼里它们是两个不同的模型——免费行被关小黑屋的时候，收费行通常毫发无伤。这个版本就是把这个「另一条路」写出来。
+### 同一个模型，凭什么有两行
+上游把一条产品线按**多行**卖，每行有自己的 id、自己的价格、自己的限流额度，但**显示名字是一样的**。实测两个网关：
+| 网关 | 免费行 | 收费行 |
+| --- | --- | --- |
+| 国际版 | `deepseek-v4.1-flash`（x0.00） | `deepseek-v4.1-flash-sg`（x0.03） |
+| 国内版 | `hy3`（x0.00） | `hy3-x`（x0.05） |
+注意 `-sg` 和 `-x` 跟免费行**没有任何前缀关系**，能把它们认成一家的只有那个相同的显示名。所以匹配是按名字来的，不是按 id 猜的。
+### 现在会怎么提示
+- **模型列表**：免费行后面挂一个小灰标「付费同款 deepseek-v4.1-flash-sg（0.03x）」，鼠标悬停解释「免费档先被限流；同一个模型的付费行不受这个限制影响」。灰的、低调的——这一行现在仍然是免费的那个，标签只是告诉你退路在哪，不是催你花钱。
+- **429 报错**：以前是「every account is rate-limited for model deepseek-v4.1-flash (4/4 cooling, tried 0)」，现在后面会接一句「deepseek-v4.1-flash-sg is the same model on a paid row (x0.03 credits) and is rate-limited separately; switch to it to keep going」。
+- **账号卡片**：某个账号上「`hy4-preview` cooling to 10:14」这种小标后面，也会跟上「→ 收费行的 id（倍率）还能用」。
+### 刻意没做的事
+- **收费行不标标签。** 只有倍率等于 0 的行才找孪生兄弟。否则「GLM-5.3」这种本身收费、又恰好有个更便宜的闪速版的模型，也会被挂上一个标签，最后满屏都是提示，等于没提示。
+- **没有收费同款就不说话。** 独苗模型（整条线只有它自己）不会有任何多余文字，也不会留下一个孤零零的分隔符。
+- **不把另一个免费行当退路。** 两个免费行是一起被限流的，切过去纯属换个人排队，说了等于骗人。
+- **倍率未知的行不算数。** 上游没给价格的兄弟行不能被承诺成「那个收费的」——用户切过去以为知道价钱，结果未必。
+### 顺带说清楚：国际版没有「每天领 30 积分」
+上一版已经查过一遍，这次把话说完整。国际版（`www.workbuddy.ai`）**没有**签到活动，也**没有** `daily-checkin` 这条路由：
+- `POST /v2/billing/meter/checkin-activity-status` 返回 200，但 `active: false`（字段在，活动没开）；
+- `GET /v2/billing/meter/get-user-resource` 直接 404（国内版才有这个接口）；
+- `/v2/billing/meter/checkin`、`/daily-checkin-activity`、`/checkin-activity` 全是 404。
+国际版真正有的是另一套东西：**成长任务板**（5 条：完成一次对话、安装技能、绑定微信、召唤专家、使用模板）和 **streak 连续打卡**（7 天 / 14 天 / 28 天档位，分别给 0 / 50 / 150 积分）。但它的字段形状跟国内版不一样（没有 credit / energy / target / current），插件目前解析不了，所以**没有**为国际版开自动化——没有可领的东西，开了也只是每天准时去撞 404。
+国内版的签到是正常的，多账号逐个领取的链路本来就有，不受本次改动影响。
+## 1.8.1 — 一个过期的登录状态，不再拖着整个池子陪跑
+> 有人的卡片上，好几个账号下面顶着一大段红色英文，大意是「上游不认这个登录了，去桌面端重新登录」。话说得没错，可问题是：它只说了结论，没解决过程——那几个账号明明已经废了，每次请求还是要挨个撞一遍，撞得头破血流，旁边几个好端端的账号一次都轮不上。
+### 事情是怎么变成这样的
+上游吊销一个登录状态时，**不会顺手把凭据文件里的过期时间改掉**。于是本机留着一份「看起来还有效」的凭据：过期时间写着 11 月 4 日，今天才 10 月，一切正常。
+插件就信了。它把这三个账号当成健康账号，按顺序一个一个试：
+1. 拿账号 A 去请求，上游回 401；
+2. 插件想「可能是 token 过期了」，于是刷新 token；
+3. 上游回答「这个 refresh token 早就没了」（`invalid_grant: Offline user session not found`）；
+4. 插件刷新失败，但**没有记仇**，转头又拿 A 去试；
+5. 八次重试名额（`maxAttempts`）就这么全喂给了同一个死账号，健康账号一次都没被碰过。
+所以现象是「明明还有能用的账号，请求却一直失败」，外加卡片上一片红。
+### 现在怎么处理
+给账号加了第三种状态：**判死**（前两种是「正常」和「限流冷却」）。
+- **只有上游亲口说死才算死。** 判据是 `invalid_grant` / `Offline user session not found` 这类明确答复。网络超时、DNS 抽风、5xx 一律不算——否则一次网络抖动就会把好账号关进小黑屋半小时，那比原来的 bug 还难查。
+- **判死的账号立刻退出轮换**，不再参与 `acquire` 的选择，请求当场换健康账号继续，不用等到八次重试耗尽。
+- **想复活有两条路**：在 WorkBuddy 桌面端重新登录该账号（插件发现 refresh token 变了，自动放行），或者点卡片上的「清除所有冷却」手动再给它一次机会。
+- **全池都死了的时候**，返回的不再是含含糊糊的「你还没登录」，而是 401 `session_dead`：`N/M WorkBuddy account(s) for this gateway were rejected by the upstream (their sign-in was revoked); sign in again in the WorkBuddy desktop app to restore them`。「等待」和「重新登录」是两种完全不同的处置方式，不能混着报。
+### 卡片上的红字也收拾了一下
+- 原来那段整段英文报错**直接铺在「积分包」面板里**，把面板撑得老长，右边的「合计」都被挤出屏幕。现在折叠成一个红色小标「**登录已被拒绝**」，鼠标悬停才显示原文。
+- 账号行上加了红色的「登录已被拒绝」标签，下面补一句「请在 WorkBuddy 桌面端重新登录该账号以恢复」——红色是故意的，用琥珀色会让人以为「等一会儿就好」，而这个状态等多久都不会好。
+- 判死的账号**不再参与卡片刷新时的积分 / 签到探测**。以前每刷新一次卡片，就对每个死账号白打两个必定 401 的请求，刷新越勤越热闹。
+### 已知边界
+- 判死状态记在内存里，重启后重新判定。也就是说重启后的第一次请求还会再试一次那个账号，然后才把它请出去——这一次的代价是必要的，否则「重启一下就好了」的临时故障会被误判成永久失效。
+- 国际版每日签到活动（`checkin-activity-status`）实测当前是 `active: false`，所以「多账号自动领 30 积分」目前没有可领的东西；国内版的活动是正常的，逐账号领取的链路本来就有。
+## 1.8.0 — 四种模式，终于排得像个样子了
+> 上一版加了第四种模式「每对话固定」，功能是好的，排版是坏的。坏得很实在：格子还是按三个排的，第四个只好委屈地掉到下一行，占着半个身位，像个插班生。
+### 问题出在哪
+「账号使用方式」这一块本来写着 `grid-template-columns: repeat(3, ...)`——三列。模式从三个变成四个之后，没人去改这个数字。
+于是：
+- 第四张卡被挤到第二行，左边空出一大块，右边孤零零一张；
+- 每张卡只剩大约 190 像素宽，中文说明被折成两三行，长短参差不齐，眼睛没法竖着扫；
+- 更尴尬的是，**测试全绿、构建全过**——因为没有任何一个测试会去数 CSS 里的网格列数。这种错只能靠眼睛发现。
+### 现在长什么样
+- **两列排布**，四张卡正好 2×2，方方正正；窄窗口下自动变成一列，每张卡独占一行，说明文字不再折行。
+- **顶部多了一个「当前：每对话固定」的小徽章**，不用在四张卡里自己找哪张亮着。
+- **选中的那张卡明显抬高**：底色提亮一层，左侧加一条竖色条，一眼就能认出来。
+- 「推荐」不再塞进标题文字里（`每对话固定（推荐）`这种写法会让标题长度不齐），改成一个**独立的小绿标**挂在卡片右上角。
+### 配色上的一点坚持
+这次参考了 `dingminhua/dsh-connect-workbuddy` 的界面，它的思路很清楚：给「当前项」一条竖色条 + 抬高的底色。这套手法我们借来了。
+但**颜色没借**。它用的是宿主品牌蓝 `#5686fe`——那是 DSH 自己的颜色，不是这张卡片的。我们的卡片有自己的一套：底色用和上面区域切换按钮选中时同一个「抬升表面」色，竖色条用中性色，和宿主保持一致但不冒充宿主。
+绿色只留给「推荐」徽章，因为卡片下方那个绿点已经在表示「账号健康」了，别让两种绿打架。
+### 已知边界
+- 这次只动了样式和排版，**分发逻辑一行没改**——四种模式的行为和 1.7.9 完全一样。
+- 布局测试是**读源码文本**断言的（比如「网格必须是两列」「选中态不许出现 brand-primary」），能防住改错，但防不住视觉上「两列也不好看」。真正的判断还得靠眼睛。
+## 1.7.9 — 一个对话只用一个账号，新对话才换人
+> 有人反馈：除了「优先模式」，换别的模式都会掉命中率、掉速度。这个观察是对的，而且原因不在你的网络——在账号切换本身。所以这次加了一种新模式，专门解决这件事。
+### 为什么换个模式就会掉命中率
+上游的 prompt 缓存是按**账号**隔离的，不是按你这个人。
+所以「轮换模式」和「均衡模式」每发一条消息都可能换一个账号，对上游来说就是换了一个租户——**整段对话的缓存全部作废，从第一个字重新算**。命中率当然掉，首字延迟当然涨。
+而「优先模式」把这一切都押在一个账号上：缓存稳了，速度好了，代价是这个账号的额度会被你一个人用完。
+一句话：以前你只能在「额度分摊」和「缓存命中」之间选一个。
+### 新增「每对话固定」模式
+现在可以两个都要。
+规则很简单：**一个对话从头到尾只用一个账号；你新开一个对话，才轮到下一个账号。**
+- 同一个对话的每一轮都打同一个账号 → 上游缓存一直是热的 → 命中率和速度都是优先模式的水平。
+- 新对话按顺序铺到下一个账号 → 额度还是分散在几个账号上，不会只烧一个。
+卡片上「账号使用方式」里多了一个「每对话固定（推荐）」，点一下就能切。
+**默认值仍然是「优先模式」，没有偷偷改你的设置。** 想试新模式，自己点一下；不满意，再点回来。
+### 账号被限流或被你关掉，会自动换绑
+绑定不是死契。如果这个对话的账号：
+- 被上游限流了（只针对当前模型，别的模型照用），
+- 被你在卡片上关掉了，
+- 或者积分到了你设的保留线，
+那么这个对话下一轮会自动换到一个能用的账号，并且**以后就固定在新的那个账号上**——不会每轮都重新挑，也不会因为一个账号打盹就让整个对话报错。
+### 四种模式怎么选
+- **每对话固定**：多个对话同时用，既想省额度又想保住命中率。推荐先试这个。
+- **优先模式**：就一个对话，或者只有一个账号额度够用。缓存最稳。
+- **轮换模式**：不在乎速度，只想让几个账号的积分严格平均地掉。
+- **均衡模式**：随机抽，闲置越久的账号越容易被选中；比轮换更不容易被一个不健康的账号拖住。
+### 已知边界
+- 绑定只存在内存里，重启 DSH 后就忘了。影响很小：重启只是让每个对话重新认一次账号，之后照样固定。
+- 绑定按**对话的第一条用户消息**区分。两个对话如果第一句话一字不差，会被当成同一个对话、共用账号。这种情况很少见，共用了也没有坏处，只是共享一份缓存。
+- 最多记住 200 个对话的绑定，超了会淘汰最久没用过的那个。被淘汰的对话下一轮重新绑定一次，仅此一次，行为不受影响。
+## 1.7.8 — 说清楚卡片在哪儿、以及我们支持到哪个版本
+> 这次没有功能问题，全在「声明」上：一处把你引到不存在的路径，一处让你以为装错了版本。
+### README 的入口路径是 0.1.x 时代的，0.2.0 上按它找不到
+README 一直写着「设置 → 插件 → DSH WorkBuddy XD Pool」。**0.2.0 起没有这条二层路径了。**
+实际位置是：**打开设置面板 → 顶部平级标签里的「XD Pool」**（排在 `通用设置 / 模型 / 内置插件 / Agent 预设` 后面）。开设置面板的方式是**侧边栏左下角的齿轮**，或快捷键 `Ctrl+Alt+,`。
+已把 README 三处改掉，并且**补上了开面板的方法**——只写「切到 XD Pool」而不说怎么开设置，等于没写。老路径保留一句「0.1.x 时代叫这个」，方便升级上来的人理解自己的习惯为什么突然不灵了。
+### `engines.dsh` 写着 `<0.2.0`，可它在 0.2.0 上跑得好好的
+这个声明的问题不在于"保守"，而在于**它会把人带偏**：任何人按 `engines` 做兼容判断，第一反应都是"这插件不支持 0.2.0"，然后往错误的方向排查。反馈里就有一位因此走了一大圈。
+现在放宽到 `<0.3.0`，并且**把三个 host peer 依赖（`dsh-llm` / `dsh-llm-pi-ai` / `dsh-settings`）一起对齐**——它们约束的是同一批宿主包，只改一个反而制造新的不一致。
+放宽不等于"什么都接受"：上界仍然卡在 `<0.3.0`，**没测过的大版本不该被默认声称支持**。
+### 导航图标匹配不上时，现在会说话
+`installNavIcon()` 靠选择器找设置面板里那一行。**找不到时它完全静默** —— 表现就是"图标没出来"，没有任何线索。这次排查里它不是故障点，但它是最贵的一环：**看起来什么都没发生**。
+现在连续匹配失败会 `console.warn` 一次，带上选择器、期望的标签、以及**当前导航里实际有什么**：
+```
+[dsh-xdpool] the settings nav row could not be found, so the icon was not applied.
+selector="[role=\"dialog\"] nav button" expectedLabel="XD Pool" rowsPresent=["通用设置","模型",...]
+This is cosmetic only — the card itself still works. Please report this line…
+```
+**不是每次都喊**：设置面板没打开时找不到是**正常的**（那一行压根不在 DOM 里），每次都喊只会让人学会忽略它。所以只在"面板开着、却连续 N 次找不到"时才报一次，且每轮只报一次。
+### 关于那份"0.2.0 删了 slots 服务"的报告
+反馈者**自己撤回了**那个结论，我更正一下：**不成立**。
+他后来实测到：`__DSH_BOOT__.entries` 含本插件、`importErrors` 为空、客户端 fiber 状态是 ACTIVE、卡片 DOM 完整渲染、`installNavIcon` 正常生效。而且**把 `dsh.client.inject` 改掉再测，行为完全一致** —— 所以那两个包的声明**不会阻断加载，不需要改**。
+他复盘出的两个方法论坑，我认为值得原样记下来，因为它们非常容易重犯：
+- 只用正则扫「谁 `provide("name")` 了服务」，漏掉别的声明写法，就宣布服务被删了 —— **典型的假阴性**；
+- 在**会话页**（设置面板没开）dump DOM 搜插件节点，0 命中当成故障证据 —— 而 `settings.section` **只在面板打开时才进 DOM**，0 命中是必然的。
+`slots` 和 `settings.section` 在 0.2.0 里都健在，渲染方是 `dsh-client-ui-settings-general` 的 `renderSlot("settings.section", …)`。
+### 验证
+- 类型检查全绿，测试 **332 项全绿**（+7）。
+- 新增 `tests/compatibility-declaration.test.ts`：`engines.dsh` 必须容纳 0.2.x、**上界仍要卡住没测过的大版本**、三个 host peer 与 `engines.dsh` 保持一致、README **不得再把老路径当指引**（但允许作为历史说明出现）、必须写出开设置面板的方法。
+- **反向验证**：把 `engines` 退回 `<0.2.0` → 2 项变红；把 README 退回老路径 → 1 项变红。
+- 本机核对宿主代码：`renderSlot("settings.section", { close }, { only: active })` 确为**平级渲染**，插件注册 `order: 440`（排最后），与反馈的实测描述一致。
+### 一点说明
+我本机是 DSH Desktop 2.0.15（内核 0.1.7-rc.2），**不是 0.2.0-rc.2**，所以我**没法在本地复现 0.2.0 的渲染行为**。本次改动依据的是反馈者提供的实测数据，外加我对本机宿主代码里 `renderSlot` 调用的核对。放宽 `engines` 这个结论我是采信的，但没有在 0.2.0 上亲手验过。
+## 1.7.7 — 别再让你为了一个「等一会儿」去重新登录
+> 报错说「API 密钥无效」，于是你跑去重新登录 —— 但密钥根本没问题，只是那个模型暂时限流了。
+### 问题一：限流被说成了「密钥无效」
+**你会看到**：国际版用 hy4 时，偶尔弹出「API 密钥无效」。你重新登录、换账号，都不一定管用。
+**为什么**：看日志就清楚了（时间连着三行）：
+```
+14:50:22  qingche526  rate-limited on hy4-preview-f  → cooling + rotating
+14:50:23  aosi526     rate-limited on hy4-preview-f  → cooling + rotating
+14:50:25  401: "no WorkBuddy credential found; sign in on the desktop app"
+```
+两个账号的 hy4-preview-f 都被限流**冷却**了（一小时），于是池子里暂时没有可用账号。可插件判断「有没有被限流」用的是**本次请求内**的临时记录 —— 上次请求造成的冷却，它看不见。于是它以为「一个账号都没有 → 你没登录」→ 报 **401**。
+DSH 把 401 显示成「API 密钥无效」。**你被派去修一个根本没坏的东西。**
+**怎么修的**：不再靠本次请求的临时记录猜，而是**直接问账号池「为什么现在没有可用账号」**，然后按真实原因报对应的错：
+| 真实情况 | 以前 | 现在 |
+|---|---|---|
+| 模型限流中 | 401 密钥无效 | **429 该模型限流中**（等一会儿即可）|
+| 账号全被关/移出 | 401 密钥无效 | **403 账号全部已关闭**（去卡片打开）|
+| 积分低于保留线 | 401 密钥无效 | **402 积分不足** |
+| 确实没登录 | 401 | 401（这个才是对的）|
+四种情况**需要完全相反的处理**，以前却都推给你「重新登录」。现在只有真的该重新登录时才这么说。
+### 问题二：上下文「压缩」把目标设得比原文还大
+日志里抓到的：
+```
+context overrun on deepseek-v4.1-flash (~791793 tokens); compacting to ~797952
+                                  ↑ 原文 79.1 万                    ↑ 目标 79.7 万
+```
+**压缩目标比要压缩的东西还大** —— 等于什么都没压，重试当然又超限。而日志看起来还挺像"我处理过了"。
+**为什么**：目标值是按**目录里写的窗口**算的（`deepseek-v4.1-flash` 标称 1M），取 80% → `797952`。但**标称 1M 是宣传值，不是真实生效上限** —— 否则它就不会被拒了。
+**怎么修的**：**正在超限的那个请求本身就是证据**。既然它太大了，目标就必须明显小于它。现在取「按窗口算」和「按原文一半」的较小值：
+```
+原文 791793 → 目标 395896      （真正压掉一半）
+```
+### 顺便：这类报错终于有线索了
+上游的 `model_param_invalid` 里 **`param` 字段是空的** —— 它只说「参数不符合要求」，不说是哪个参数。你之前贴的那条 11133 就是这样，等于没有线索。
+现在遇到 400 时，日志会记下**请求的形状**（顶层参数名、各角色的消息条数、工具数量、内容字符数）：
+```
+rejected the request as invalid (model deepseek-v4.1-flash) —
+keys=[max_tokens messages model reasoning_effort stream temperature tool_choice tools top_k top_p]
+messages=122 (system:1 user:61 assistant:30 tool:30) tools=77 contentChars=481233
+```
+**只有形状，没有内容**（对话是你的，不该进日志）。下次再遇到，日志里就能看出是哪个参数/哪个维度不对。
+### 我排查时的事
+我一开始想直接复现 11133，试了：采样参数（`top_k`/`repetition_penalty`/`temperature`/`top_p`）、推理档位（`minimal` 到 `max`，还试了无效档位）、各种消息形状（回放 `reasoning_content`、工具调用链）、消息数量（最多 362 条）、77 个工具 + 长会话、超长 prompt ——**国内版和国际版全部返回 200**。
+**我没能复现它**，所以没有针对 11133 写"修复"（那会是猜测）。改的都是**从日志里坐实的**问题：那两个是确凿的。这个 11133 加上刚加的形状日志，下次出现时就能定位了。
+### 验证
+- 类型检查全绿，测试 **325 项全绿**（+12）。
+- 新增 `tests/pool-availability.test.ts`（7 项）：池能正确区分「无人登录 / 模型限流 / 账号全关 / 积分保留 / 可用」、**限流时返回 429 且文案不含「sign in」**、真没登录时仍是 401、**不把另一个 region 的账号算进来**、过期冷却自动视为可用。
+- 新增 `tests/context-budget-budget.test.ts`（5 项）：**目录窗口远大于原文时目标必须更小**（用日志里那组真实数字）、窗口未知时减半、窗口小于原文时也不放大、目标不为零。
+- **反向验证**：把 429 分支禁用、退回原来的 401 → 测试变红。
+## 1.7.6 — 一个读不出来的凭据文件，不再带走整个账号池
+> 你切了 4 个账号登录，界面显示 4 个；重启之后只剩 2 个 —— 不是账号没了，是它们被一个文件拖累了。
+**你会看到**：用 WorkBuddy Switch 切换登录几个国内版账号后，卡片上账号数对不上——重启少了两个。
+**为什么**：认证目录里**同时存在好几种文件**：明文的老格式、5.6.0+ 起的加密格式、写到一半的、还有插件不认识的版本。这些**混在一起是常态**，不是错误。
+但旧代码里，只要**碰到一个加密又打不开的文件**（WorkBuddy 没运行、或者取不到它的密钥），就会**抛异常终止整个扫描** —— 于是那些**明明读得好好的账号也被一起丢掉**。一个坏文件，带走整个池。
+我复现了这个行为：3 个正常文件 + 1 个打不开的，结果**不是返回 3 个，而是整个扫描抛错、0 个账号**。
+**怎么修的**：
+- **单个文件失败只跳过它自己**，不会连累其他账号。这是核心修复；
+- **跳过的文件会被记录并显示在卡片上**：现在账号区会明确写「有 N 个凭据文件读不出来」，并**列出文件名和原因**。其中「已加密 — 启动一次 WorkBuddy 才能取到密钥」是可操作的；而"不是凭据文件"就只是个无关文件。区分开很重要，不然你会去修一个压根修不好的东西。
+这样账号数就**可信了**：不会再出现「磁盘上 4 个文件，界面显示 2 个账号」这种说不清的落差。
+### 顺带修的第二个问题：pi-ai 跨代误用
+另一份反馈报的是「每轮对话必崩，报 `Cannot read properties of undefined` 且不可重试」。根因是**同一条调用链上混用了两代 pi-ai** —— 插件用 0.85.x 组装 provider，宿主适配器用 0.87.x 消费事件流，两代对终态消息的形状约定不同，接缝处直接抛异常。而宿主把它归为不可重试的 `PI_AI_ERROR`，栈还被丢弃，所以极难排查。
+**为什么 `package.json` 的范围拦不住**：旧的 peer 声明是 `>=0.82.1 <0.85.0`，**上界把宿主的 0.87 代际整个排除在外** —— 等于把「跨代混用」变成了一种**合法的安装组合**。版本范围只能描述"我能接受什么"，描述不了"机器上实际装的是哪一份"。
+**所以改成两条**：
+- **放开上界**（`>=0.82.1`），不再把宿主代际排除成非法组合；
+- **加载时实测并告警**：比对插件这份与宿主那份 pi-ai 的代际，**不一致就在日志里点名两个版本并给出修法**（用 pnpm `overrides` 把代际对齐宿主）。
+只告警、**不阻止启动** —— 版本不一致也可能是无害的，因为一个猜测就让插件拒绝加载会更糟。
+### 验证
+- 类型检查全绿，测试 **313 项全绿**（+9），**连续两次全量运行稳定**。
+- 新增 `tests/account-discovery.test.ts`（7 项）：单个坏文件不拖垮扫描、**全部文件都坏时也不抛错**、跳过的文件带原因上报、坏文件不会被算成账号、非 JSON / 结构不对的文件同样只跳过。
+- 新增 `tests/pi-ai-generation.test.ts`（9 项）：代际归约（补丁差异不算跨代）、**0.85 / 0.87 分裂能被识别**、任一侧解析不到时判为未知、告警文案包含两个版本与修法。
+- **反向验证**：把「加密错误重新抛出」放回 → 4 项变红，确认测试确实能抓住这个缺陷。
+- 构建后校验产物**已内联**代际检测模块（无外部 `.ts` 引用），并直接加载 `lib/index.js` 确认可运行。
+### 已知未覆盖
+「每轮必崩」的那份报告里，还建议了**宿主侧**两处加固（`mapStopReason` 对空 `content` 加守卫、`classifyPiAiError` 保留原始 `error.stack`）。那是 DSH 宿主的代码，不在这个插件仓库内，需要另开 issue 到 DSH。
+## 1.7.5 — 模型列表会告诉你「现在用哪个不花钱」
+> Hy4 preview 晚上 23 点到早上 8 点免费，Hy3 一直在免费期 —— 现在卡片上直接看得出来。
+**你会看到**：模型列表里，**当前免费的排在最上面**并带标记：
+```
+[免费]              hy3                  x0.00
+                    auto
+(23:00 起免费 · 活动至 10-31)  hy4-preview   x0.29
+                    hy3-x                x0.05
+```
+到了晚上 23 点，同一行会变成：
+```
+[免费至 08:00 · 活动至 10-31]  hy4-preview   x0.29
+[免费]              hy3                  x0.00
+```
+**为什么需要专门做**：因为**上游接口不说这件事**。我拉了真实的国内版接口逐字段核对：
+| 信息 | 上游提供吗 |
+|---|---|
+| Hy3 限免 | ✅ 提供 —— `credits: "x0.00"`，倍率本身就是 0，我们一直在正确显示 |
+| Hy4 preview **夜间**限免 | ❌ **不提供** —— 倍率恒为 `x0.29`，**没有任何时段字段** |
+| Hy4 preview **新用户 14 天**额度 | ❌ **不提供** —— 积分包里也没有这类条目 |
+所以夜间限免这条规则，只能由插件自己带。我把它写成一张**规则表**（`src/promo.ts`），包含「哪个平台、哪些 id 前缀、哪些小时、有效期到哪天」。
+**几个刻意的设计**：
+- **规则区分平台**。这是**国内版活动**，所以规则里带 `region: 'cn'`，**国际版完全不受影响** —— 国际版的 `hy4-preview-f` 显示「免费」是因为**上游倍率真的是 0**（客观事实），不是我们套了活动规则；
+- **免费状态是「此刻」的，不是模型固有属性**。所以同一天里 `hy4-preview` 的标记会变 —— 这才是真实情况；
+- **窗口外只给一个低调的虚线提示**（`23:00 起免费`），**不给「免费」徽章**。因为它此刻**确实要花积分**，标成免费会让你花错钱；
+- **只有「此刻免费」的才置顶**。窗口外的模型不置顶，否则就是把一个要花钱的模型举到最前面，误导性更强；
+- **标出活动截止日**（`活动至 10-31`）。方便你安排什么时候用 —— 而且活动一旦延期，改日期就能看到，不用翻更新日志；
+- **规则带过期日期**，到 10 月 31 日之后**自动失效**，不需要有人记得来删代码；
+- **`hy4-preview` 用前缀匹配**，因为上游有 `hy4-preview` 和 `hy4-preview-x` 两个 id，是同一款产品。
+### 关于「新用户 14 天免费额度」——明确没做
+你提到「新用户没用过 Hy4 preview，还能免费 14 天，要区分出来」。**这个我做不到，而且硬做会更糟**：
+上游**完全不记录**「这个账户有没有用过 Hy4 preview」—— 模型目录里没有、积分包里也没有（我实测过，44 个积分包里没有一个试用额度条目）。
+唯一能猜的办法是「插件自己记住第一次调用的时间」。但这有个致命问题：**它只知道「用本插件之后」的历史**。你之前要是在官方客户端用过 Hy4 preview，插件照样会以为你是新用户，然后给你标一个**假的「免费」** —— 而你会因此放心去用，结果**扣了积分**。
+**给你一个假的「免费」，比不给你标记更糟**，因为它直接改变你的花钱决定。所以这条留白，不做推测。
+如果你确实需要，可行的做法是**你自己确认**：卡片上显示的是客观事实（倍率 + 夜间窗口），你清楚自己是不是新用户，看一眼就知道该不该用。
+### 验证
+- 类型检查全绿，测试 **297 项全绿**（+19）。
+- 新增 `tests/promo.test.ts`：23:00–08:00 窗口内/外的判定、跨午夜（23 点在窗口内、8 点不在）、窗口关闭时间（`免费至 08:00`）、下次开启时间（`23:00 起免费`）、同族 id（`hy4-preview` 与 `hy4-preview-x`）、零倍率模型全天免费且不误入夜间规则、**到期自动失效**（10/31 有效、11/1 失效）、**免费置顶只认「此刻」免费**、**活动截止日随状态带出**、**国际版不受活动影响**（但零倍率模型在两边都算免费）。
+- **反向验证**：清空夜间小时 → 7 项变红；删掉过期日期 → 2 项变红；**移除平台过滤 → 「国际版不受影响」变红**。确认测试真的能抓住这三类缺陷。
+- 用**两个平台的真实清单**（国内版 16 个 / 国际版 24 个）跑卡片渲染逻辑，在 12:00 与 23:30 核对：国内版 `hy4-preview` 正确显示活动徽章与截止日，**国际版完全不受活动规则影响**。
+## 1.7.4 — 装在中文文件夹里的 WorkBuddy，终于找得到了
+> 「腾讯」两个字，让插件整整看不见一个装好、登录着、正在运行的 WorkBuddy。
+**你会看到**：插件卡片报「找不到 WorkBuddy 桌面端，无法取得密钥」，可你明明：程序装着、还开着、凭据文件就在那儿躺着。中文 Windows 上，只要**安装路径里带中文**（比如 `D:\ruanjian\anzhuang\腾讯\WorkBuddy\`）就会中招——国内用户把软件装进中文目录太常见了。
+**为什么**：插件去注册表里问「WorkBuddy 装哪儿了」，用的是 `reg.exe`，而 `reg.exe` 按**系统控制台代码页**输出——中文系统就是 GBK（936）。我们这边却当成 UTF-8 去读。于是：
+```
+实际路径：D:\ruanjian\anzhuang\腾讯\WorkBuddy\WorkBuddy.exe
+读出来：  D:\ruanjian\anzhuang\��Ѷ\WorkBuddy\WorkBuddy.exe   ← 存的什么鬼
+```
+`腾讯` 变成 `��Ѷ`，这个路径当然**不存在**。所有候选路径全部落空，插件就得出「没装」的结论。可笑的是它其实**探到了**注册表记录，只是**读成了乱码**。
+这个坑和之前那个「装到非系统盘」是两回事——那个是找不到记录，这个是找到了但读不对。
+**怎么修的**：
+- **改走 PowerShell 读注册表**（主路径）。`Get-ItemProperty` 直接调注册表 API，**根本不过控制台代码页那一关**，中文路径原样拿到；
+- **保留 `reg.exe` 作后备**（万一机器上 PowerShell 不可用），但**不再假定 UTF-8**：按字节读进来，逐个尝试各种编码，并且**用「这个路径是否真的存在」来判定哪个解码是对的**——这是唯一能区分「正确字节」和「看着像那么回事的乱码」的办法。
+**顺带修了报告里提到的两点**：
+- `DisplayIcon` 和 `InstallLocation` **两个字段都读**（不少安装包的 `InstallLocation` 是空的，只有 `DisplayIcon` 有值），并且清理 `",0` 后缀的逻辑保持不变；
+- `doctor` **现在会把探测到的每一条路径原样列出来**，前面标 `✓`/`·` 表示存不存在。以前它压根不显示这些路径——而这恰恰是排查「装了却找不到」最该看的东西。**乱码路径现在一眼就能看见**，不用再靠猜。
+### 验证
+- 类型检查全绿，测试 **278 项全绿**（+2）。
+- 新增 `tests/windows-registry-encoding.test.ts`：在本机**真实创建**一个含中文的目录（`D:\...\腾讯\WorkBuddy\WorkBuddy.exe`）并写进真实注册表，然后跑插件的真实探测逻辑，断言**拿到的路径与真实路径完全一致、且文件确实存在**。
+- **反向验证**：把修复撤掉、退回「`reg.exe` + UTF-8」，含中文的路径**读不出来**（0 条），测试变红——确认这个测试真的能抓住这个 bug。
+- 实测 `doctor` 输出：`✓ D:\DSH\_doc_check\腾讯\WorkBuddy\WorkBuddy.exe`，中文完整、存在性正确。
+### 给中招的人（在你升级之前，或者万一还有别的编码）
+临时指路，设完**完全退出 DSH 再启动**：
+```powershell
+[Environment]::SetEnvironmentVariable("WORKBUDDY_APP_EXECUTABLE",
+  "D:\ruanjian\anzhuang\腾讯\WorkBuddy\WorkBuddy.exe", "User")
+```
+写进 `$DSH_HOME/.env` 也一样有效（不用注销，更省事）。
+## 1.7.3 — 模型不会因为一次网络抖动就消失
+> 开机那一秒网络还没起来，插件就把模型列表「降级」了，然后一整天都不再试第二次。
+**你会看到**：某次重启后，国内版的模型从 16 个变成 10 个，`deepseek-v4.1-flash` 之类凭空消失（国际版没事）。更麻烦的是你之前勾选过那个模型，于是**依赖这个 provider 的东西开始报错**（`has no configured model "deepseek-v4.1-flash"`），会话被悄悄切到国际版的同名模型上，而你根本不知道为什么。
+界面**没有任何提示** —— 只有日志里一条不起眼的 `[W]`。点卡片上的「重新检测账号」？**没用**。唯一的恢复方式是重启 DSH。
+**为什么**：启动时去拉模型列表，那一次**失败了**（日志显示同一秒里有好几个独立组件都报 `fetch failed`，而 0.7 秒后国际版就成功了 —— 典型的开机网络还没就绪）。失败之后：
+1. **不重试**，一次就放弃；
+2. **静默回退**到插件内置的那张静态表 —— 那张表里没有 `deepseek-v4.1-flash`，于是「拉取失败」在你眼里就是「模型被删了」；
+3. 「重新检测账号」这个按钮**只重新扫描账号**，压根不碰模型列表。名字起得太容易让人误会，你会以为它能修好，实际什么都不做。
+**怎么修的**：
+- **拉取失败自动重试**（1 秒 / 3 秒 / 8 秒，最多 3 次）。开机抖动基本一次就能救回来。重试会写日志并标明第几次，所以「列表为什么慢」是可查的。**一个 region 的重试不影响另一个** —— 两个网关是独立主机，没理由同归于尽；
+- **新增「重新获取模型」按钮**，并把它和「重新检测账号」分清楚：前者只管模型，后者只管账号，而且**后者现在也会顺带刷新模型**（因为大家都会去点它）；
+- **卡片会明说**：当前列表是「内置列表（离线）」时，模型区标题旁挂一个橙色标记，告诉你在看的是兜底表而不是完整清单，旁边就是重试按钮；
+- **兜底表按真实上游数据重建**。这是顺手挖出来的一个更严重的问题：旧表**几乎全部过时** —— `hy3` 的窗口写着 32K（实际 192K）、`kimi-k3` 这个 id 上游早就不用了（实际是 `kimi-k3-1`），而 `deepseek-v4.1-flash`、`kimi-k2.6/2.7/2.8`、`glm-5v-turbo`、`hy3-x` 全都不在表里。我是**直接拉了国内版的真实接口**逐条核对后重写的，包含窗口大小和倍率。过时的兜底表比短表更糟 —— 它看起来权威，实际是错的。
+### 一个差点修反的地方（顺手修了，免得白干）
+改完重试我差点以为完事，结果发现：「刷新失败」会把一个**本来正常的**列表也打回兜底状态。也就是说，如果当前用的是实时列表、只是这次刷新没成功，卡片反而会显示「离线」。这是**修反了** —— 所以现在**刷新失败保留现有列表**，只有真的没有实时数据时才标记为兜底。
+### 明确没做的
+- **不做定时自动重拉**。开机失败已有重试兜底，而正常运行时定期轮询模型接口只会增加无谓的上游请求；真要更新，点按钮即可。
+- **不做「缓存上次成功的列表到磁盘」**。这能彻底消灭回退问题，但会把模型清单持久化，涉及与 settings 文档的版本兼容；本轮先修「抖动即降级」这个主因，不夹带更大的改动。
+### 验证
+- 类型检查全绿，测试 **274 项全绿**（原 262 + 新增 13，另删掉 1 项一次性探针）。
+- 新增 `tests/catalog-resilience.test.ts` 覆盖：首次失败第二次成功的恢复、用尽重试后抛错、**被调用方主动取消的请求不重试**（否则会在被要求停止后继续干活）、重试写日志、兜底表含关键模型且无重复 id、窗口值均有效。
+- **反向验证**：把重试去掉 → 3 项变红；把「刷新失败降级」的错误改法放回去 → 1 项变红。确认测试真的能抓住这两个缺陷。
+- 拉取国内版**真实接口**核对兜底表：共 16 个模型，已全部按实测数据录入。
+## 1.7.2 — 自动化不再「一跑跑一天」
+> 定好几点跑，就几点跑。之前是定好几点跑，然后从那一刻起每个整点都跑，跑到你睡觉。
+**你会看到**：把签到配成 9 点，它 9 点跑了；然后 10 点又跑、11 点又跑、13 点、14 点、15 点……**每个整点准时跑一次，一直跑到第二天零点**。配了 `[9]` 的签到，一天能跑 8 次。猫猫旅行同理，满勤。
+最诡异的是**有的任务正常、有的不正常**：活跃上报配的是 10 点，它就老老实实只跑一次。同样的代码、同样的时刻、同样的配置格式，凭什么它就能安分？
+**为什么**：一个字段被当成两种意思用了。
+闸门那边问的是「**配置的那个小时**花掉了没」——比如签到的 9 点，它去找的记号是 `今天的9点`。而跑完之后记账那边写的是「**现在几点**」——10 点 35 分跑完，写的就是 `今天的10点`。
+**两边的答案几乎永远对不上**。于是闸门永远是开的，任务每小时都能再跑一次。至于为什么最后变成「每个整点一次」而不是每分钟一次——还有一道「同一小时内不许重复」的节流挡着，所以最密也就是每小时一发。
+**那个「正常」的任务恰恰是证据**：上报配的是 10 点，而那次补跑碰巧发生在 10 点 35 分（同一小时内），它写下的记号**正好**是闸门要找的那个，于是就锁住了。纯粹是撞上的——换任何一个别的时刻，它照样失控。
+还有两个更隐蔽的变体，**即使在正确的时间点触发也会失效**：
+- **一天跑两次的任务**（猫猫旅行配 `[9, 21]`）：字段只有一个，存不下两个时间点。晚上 21 点跑完写下 `21`，早上那个 `9` 的记号就被顶掉了——于是它又「欠着」，22 点、23 点接着跑；
+- **跑得久的任务**：记的是**跑完**那一刻。11:58 开始、12:01 结束，就记成了 `12 点`——哪怕它是准时触发的。
+**怎么修的**：把「花掉的时间点」和「什么时候跑的」彻底拆开，而且花掉的时间点用**集合**记（因为一天可能有好几个）。
+- **闸门**改成只认「被花掉的那个配置小时」，一次一个，最早优先；
+- **节流**（同一小时不重复）改用单独的字段，不再和记账混在一起；
+- **手动点「立即运行」不再吃掉当天的排期**——它是「额外再跑一次」，不是「今天就算完事了」。所以 10 点 35 分按一下按钮，不会把晚上 21 点的猫猫旅行取消掉。
+### 顺手修了一个让我很惭愧的地方：卡片一直瞒着我们
+这次的问题**本该一眼看出来**，但卡片上每个任务只显示日期：
+```
+每日签到   09:00    2026-09-28 · 2
+```
+那个 `2026-09-28` 是**日期**，不是时刻。所以一天跑 1 次还是 8 次，卡片上**是同一句话**——肉眼看不出任何区别，只能去翻日志才发现。这就是它能活这么久的原因。
+修复：卡片改显示**真实运行时刻**（用的是本来就采集、本来就传输、就是没渲染的那个 `lastRunAtMs`）。数据链路一直是通的，就差最后打印出来那一步。
+### 还没有做的（说清楚，免得以为都好了）
+**运行记录仍然不落盘**，重启后当天「已跑过」的记忆会清空。所以如果你在 15:00 重启一次，已经跑过的 9/10/11 点会被认为「还没跑」，补跑一轮——**这是刻意保留的补跑设计**（笔记本睡过 10 点，醒来当天仍要跑），不是 bug。但它意味着「重启几次就补跑几次」，这点没有改变。
+真要连这个也记住，得把「花掉的时间点」和收益账本一样持久化。这次没做，因为补跑本身是对的、而每次重启补跑一轮的代价是可接受的（任务都是幂等的）；把它一起改了反而会让「睡过头当天不跑」。**先说明白，不夹带。**
+### 验证
+- 类型检查全绿，测试 **259 项全绿**（原 248 + 新增 11）。
+- 新增 `tests/automation-schedule.test.ts` 锁住四个场景：补跑后当日不再重复、一天两次的任务各跑一次且中间安静、跨整点仍记在被消耗的那个时间点上、手动运行不吃掉当天排期。
+- **反向验证**：把修复**完整撤回**成原始写法后，这 5 个关键用例全部变红（含「每整点重复执行」那条）——确认测试确实能抓住这个 bug，而不是闭着眼睛也绿。
+## 1.7.1 — 你存进去的设置，终于在重启后真的生效了
+> 顺带让那些甩不掉的失效账号可以永久请出去。
+这一版修的都是社区朋友报的问题（[#17](https://github.com/XDTrees/dsh-xdpool/issues/17)、[#18](https://github.com/XDTrees/dsh-xdpool/issues/18)、[#19](https://github.com/XDTrees/dsh-xdpool/issues/19)），症状各不一样，但核心都是同一句话：**「我明明设置过了，它当没看见。」**
+### 一、重启一次，设置就白设一次
+**你会看到**：把账号使用方式调成「轮换模式」、把积分自动化打开、模型只勾了三四只…… 配置明明写进文件了，重启 DSH 一看 —— 模式跳回「优先」，自动化显示「已关闭」，模型**全部打勾**。改一次、重启一次、退一次，堪称赛博西西弗斯。
+**最关键的线索**（也是报问题那位朋友观察得最准的地方）：**同一张卡片上，「今日自动化」的收益账本能正常显示**（签到 +200、猫猫旅行 +26 都在）。
+账本读得出来、开关却是关的 —— 说明配置**读得到**，只是**没人去用它**。就好比你钥匙插得进去，但没人转那一下。
+**为什么**：负责把配置写到「池子 / 模型目录 / 自动化」这三个地方的那个函数，只在**两个事件回调**里被调用：设置变更时（0.1.5）和热更新时（0.1.7）。
+问题就在这儿 —— 这俩都是**事件**，开机那一刻谁都不响。而 0.1.7 上那个 `configure({auto})` 只管登记「这个插件有个设置页」，**既不读值也不写值**。于是三条线全停在出厂默认值上，配置文件孤零零躺在磁盘上，写得一丝不苟，就是没人理它。
+顺带这也解释了一个「灵异现象」：为什么**退回旧版反而正常** —— 旧版走的是另一条路（`onChange`），开机时会被触发一次。
+**怎么修的**：开机时老老实实调用一次，就一行。回归测试专门盯着「这行必须是开机就执行的独立语句」，防止以后有人手滑把它挪回回调里。
+### 二、自动化开关亮着「已开启」，实际一个任务都不跑
+**你会看到**：开关明明开着，界面也没报错，但**所有任务永远不会触发**。一个安静的、什么都不做的自动化。薛定谔的积分。
+**为什么**：一条自我强化的四段链条，每一环都在帮倒忙：
+1. 配置结构里把时间表写成了「可选数组」，于是**「没设置」被自动填成了空数组 `[]`** —— 从此「我没配」和「我故意配成空」长得一模一样；
+2. 调度器看到 `[]` 觉得「这是个有效值」，欣然采纳，**内置的默认时间表永远用不上**；
+3. 判断「该不该跑」时看到空数组，直接回一句「不跑」—— **永远地**；
+4. 卡片在回写配置时**漏掉了「猫猫旅行」的时间**，还把空数组原样写了回去。
+于是文件被**固化**成空的，而且**你在界面上怎么点都修不好** —— 因为界面永远只会写回空数组。死循环。
+**怎么修的**：空数组一律当作「没设置」，回落到默认时间表（签到 9 点、上报 10 点、任务 11 点、连登 12 点，猫猫旅行早晚各一趟 9 点和 21 点）；三个地方都改（构造、应用配置、卡片回写），并把时间表抽成**两端共用的一份** —— 宿主和浏览器代码没法互相引用，写两份迟早会漂移，那种漂移还特别隐蔽。顺手把「猫猫旅行永远写不回去」也修了。
+### 三、模型选择一丢，就给你「全选」
+**你会看到**：本来精挑细选勾了三四只模型，某天打开一看 —— **全勾上了**，而且**真正生效的也真的变成了全部**。你的精简清单变成了自助餐。
+**为什么**：「没有选择」和「选择丢了」这两种情况，在代码里长得**一模一样**（都是 `undefined`）。而它的兜底是个**空对象**，空对象翻译过来恰好是**「全部启用」**。
+所以一旦选择丢失，系统不是「保持不变」，而是**朝最离谱的方向** —— 把你有意关掉的模型全放出来。
+**怎么修的**：兜底改成「**沿用现在正在生效的那份选择**」。丢了就丢了，至少不会变成「全开」。丢失只会原地不动，不会放飞自我。
+### 四、失效账号终于可以彻底请出去
+**这个不是 bug，是缺功能**。池子里混着国内版和国际版账号，国际版更容易触发风控。一旦某个号废了，它就一直赖在池子里 —— 而且**没有任何办法把它彻底弄走**。
+现有三条路都不行：「停用」只是让它不参与轮换（**账号还在卡片上、凭据文件还会被读取**）；命令行 `remove` 只对你手动导入的快照有效；`disabledAccountIds` 同样是「排除轮换」，不是「移除」。
+最要命的是：**只要你在桌面 App 里再登一次这个号，它就又回来了**。打地鼠。
+**怎么修的**：新增**「移出池子」**，和「暂时停用」明确分开：
+- **卡片**上每个账号多了个「移出池子」按钮，下面还有一块「**已移出的账号**」—— 每条都能**恢复**。移除不是单向门，点错了能找回来；
+- **命令行**同步支持 `ignore` / `unignore` / `ignored`，`accounts` 也会列出已移出的号（不然账号凭空消失，你还以为插件坏了）；
+- 被移出的账号**连凭据都不再读取**，所以它**不会在你重新登录后又偷偷溜回来**。
+关于「为什么不干脆把凭据文件删掉」：那个文件就是桌面 App 当前登录的凭证，删了会把 App 一起登出；而且下次登录它还会生成回来。属于既伤人、又没用。
+移出名单存在插件自己的文件里（`~/.dsh/.xdpool/ignored.json`），这样**命令行和卡片读写的是同一份** —— 不然会出现「卡片能改、终端改不了」的尴尬。
+### 五、国际版模型的「倍率」和「免费」标记回来了
+**你会看到**：国际版那几个模型的倍率（`x0.79` 这种）和「免费」标签不见了。光秃秃一行模型名，看着像没人管的弃儿。
+**为什么**（这个是拉了真实接口逐字段对出来的，两个毛病叠加）：
+1. 上游**明明发了** `tags` 字段，但我们的解析代码**从头到尾就没读它** —— 读的时候没读，转换的时候又丢一次。所以卡片的标签逻辑**对两个平台的所有模型都不可能命中**，白写了；
+2. 「免费」一直在等一个叫 `free` 的标签出现，而**两个平台从来没发过这种标签**（实测标签是 `craft`、`text-to-image` 这类东西）。真正的「免费」写法是 **`credits: "x0.00"`** —— 国际版有三只模型就是零费率，它们一直免费，我们一直不知道。
+**怎么修的**：把 `tags` 老老实实读进来传下去；「免费」改成**看倍率是不是 0**（谁也不会为了 0 费率专门发个标签）；倍率是 0 的时候**不再显示「x0.00 积分」** —— 零费率的免费模型旁边挂个 0，还不如干脆说「免费」。
+另外给「静态兜底列表」也补上了倍率：以前上游一抽风就回退到那份没倍率的列表，表现就是「倍率突然全没了」，你还以为是插件坏了，其实只是网络打了个嗝。
+### 六、顺便修了一个让我很尴尬的事
+上一版我说「可以了」，结果有人（其实就是我）改完代码**只改了源码仓库，忘了同步到 DSH 真正加载的那个目录**。所以怎么重启都看不到新按钮 —— 代码在隔壁房间好好地跑着，你在这边找。
+这版已经同步部署，并留了备份可以回退。
+### 验证
+- 类型检查全绿，测试 **248 项全绿**（原 222 + 新增 26）。
+- 新增的两个测试文件**逐项做了反向验证**：把修复**撤回**去，测试必须变红（撤回一处 → 1 项红；撤回另一处 → 2 项红；撤回忽略过滤 → 1 项红；撤回标签读取 → 3 项红）。确认这些测试不是「闭着眼睛也全绿」的装饰品。
+- 拿**真实构建产物**跑端到端：空时间表能解析出默认值、被移出的账号在**凭据文件还在的情况下不会被重新扫描进来**、恢复后能回来。
+- 拿**真实的国际版接口数据**跑完整解析链，确认倍率和免费标记的实际渲染结果（20 个模型有倍率、3 个正确识别为免费）。
+### 最后
+感谢 [@hmtime](https://github.com/hmtime) 提交 #17 / #18。报告里「配置读得到、但没被应用」和「账本能显示、开关却是关的」这两句几乎是直接指向了根因 —— 光看现象的话，很容易一头扎进「肯定是写入失败了」的坑里查半天。这样的报告质量，值得一版单独的更新日志来谢。
+## 1.7.0 — 同一构建通吃 DSH 0.1.5 / 0.1.7，设置入口搬进左栏
+一句话：**这一版终于能在 DSH 0.1.7 上活下来了，顺带把设置入口搬进了左栏、把页面重新排了一遍。**
+以前一个构建只能伺候 0.1.5 那条线，0.1.7 上是真的会出事 —— 不是"卡片不显示"这种小事，是整个 DSH 直接退出。现在两条线一个构建通吃。
+### 一、0.1.7 上一启用插件，DSH 就原地去世
+先说症状，因为它实在太有迷惑性了：用户装好插件、点启用、**进程直接没了**。
+桌面端只留下一句 `DSH Host exited (1)`。日志？日志里最后一行还是个无关紧要的 warning，然后就**戛然而止**，一个 error 都没有。
+这种"日志被齐刷刷截断"的样子，其实是宿主的一个设计在作祟：DSH 装了 `installFailLoud`，进程里**任何**没被捕获的异常、任何没接住的 Promise rejection，都会让它当场 `exit(1)`。而那句真正的死因只写进 stderr —— 打包版 Windows 应用压根没有控制台，于是它就悄无声息地消失了。查了半天日志找不到错，别怀疑自己，它真的没写进去。
+那么是谁抛的？**三个坑叠在一起**，而且全在插件这边，内核无辜：
+**坑 1：宿主那边的 API 换了个名字，老代码还在敲旧门。** 0.1.7 把 `settings.installSection(...)` 整个删了，换成了 `configure({auto}, owner)`。我们的代码虽然做了"先看看有没有"的判断，但问题是 —— 判断失败时它只是 **warn 一声就算了**，设置页从此永远不出现；而万一服务真在场，它就**直接裸调**，在 0.1.7 上"啪"地从 `apply()` 里抛出去。宿主一看：未捕获异常，走你。
+**坑 2：客户端 `inject` 里写了两个"有你没我"的服务名。** 0.1.5 提供 `settingsScope`，0.1.7 换成了 `configForms`。而 cordis 的依赖闸门是**硬**的：`inject` 里只要有一个服务不存在，`apply` 就**永远不会被执行**，fiber 就永远挂在那里 PENDING。桌面端报 `renderer boot failed (plugins: dsh-xdpool)`，然后拒绝打开。它不报错，它就是不开。
+**坑 3：卡片注册的那个槽位，0.1.7 里根本不存在。** `settings.plugin.item` 是 0.1.5 的专属座位。0.1.7 的设置左栏只认 `settings.section`（内置的通用 / 模型 / 插件页都坐那儿）。我们一直往一个不存在的座位上放东西，于是卡片安安静静地不显示 —— 不报错、不警告，就是不出现。
+**怎么修的：** 一律改成"先探路、再走"，不猜。
+- 宿主侧：有 `installSection` 就用它（0.1.5），没有就用 `configure({auto:true})`（0.1.7），两个都没有才 warn。写入时的命名空间也得跟着线路换 —— 0.1.5 用自己起的名字，0.1.7 得用**宿主给这个插件分配的条目 id**（`ctx.fiber.entry.options.id`）。这里猜错的代价是每次保存都报 `No configurable plugin entry`。
+- 客户端：`inject` 只留两条线**都**有的 `slots` / `locale`，设置服务改用 `ctx.get()` 软探测（服务不在就返回 undefined，不抛）。
+- 顺手声明 `engines.dsh: ">=0.1.5-rc.1 <0.2.0"`，让插件市场把两条线都认成兼容；另外把 `dsh.client.inject` 里早就停更的 `dsh-client-runtime` 噪声清掉了。
+### 二、0.1.7 上保存没反应，或者说"没保存成功"
+0.1.7 有个硬门禁：**schema 里一个 `volatile` 字段都没标的条目，直接拒收**。`write()` 抛 `has no volatile fields`，`describe()` 干脆跳过它 —— 页面就是一片空白。我们的 Config 当时一个都没标，于是保存必炸、页面必空。
+还有个更阴的：0.1.7 把 volatile 字段以**活引用** `{get(): T}` 的形式交回来（这样改设置不用重挂载就能生效）。我们直接拿它去比较 —— 拿一个对象比一个字符串，结果就是**刚存进去的值，读回来是"没设置"**。
+对，这就是那个"我明明填了保留积分，重开又变回 0"的元凶。不是没存进去，是读错了。
+**怎么修的：** Config 全部 12 个字段都过一遍 `asVolatile()` —— schemastery 3.18.3+ 会调 `.volatile()`；0.1.5 那条线是 3.18.2，压根没这个方法，那就退化成什么都不做（不能手写 `meta.volatile`，那会绕过 schemastery 自己的摆放校验，塞给 0.1.5 一个它看不懂的东西）。读取则统一走 `unwrapVolatileDeep()` 把活引用剥开。另外监听 `loader/volatile-update`，保存后运行中的实例立刻重读，不用重启。
+### 三、设置入口搬进左栏 + 页面重新排了一遍
+- **入口**：改注册到 `settings.section`，左栏现在多出一行，名字叫 **XD Pool**。
+- **图标**：这个槽位的注册契约只投影 `id` / `order` / `label`，**没有 icon 字段** —— 宿主对不认识的 id 一律画个齿轮。想换图标只能自己动手：照着 `dshmarket` 的做法，按 label 在 DOM 里认出自己那一行、打个标记，再用 CSS 把宿主的 svg 藏起来，用 `mask-image` + `currentColor` 把自己的图标盖上去（颜色跟着主题走）。外加一个 `MutationObserver` 盯着 —— 切语言、切主题时行元素会被重建，标记会掉。
+- **页面**：以前要点一下才展开，现在**整页直接铺开**，并且重新排成分区卡片：页头（图标 / 标题 / 描述，右边放「重新检测账号」「清除冷却」）、状态卡片（地区切换 + 状态灯 + 汇总 + 账号使用方式）、自动化卡片、账号卡片、模型卡片。顺带修了个陈年小毛病：原来有个 `if (!open) return`，意思是**没展开就一次都不去拉状态** —— 所以你刚点开永远是空的，得傻等一轮轮询。现在挂载即拉。
+### 四、顺手修的几件小事（都来自 0.1.7 真机排查）
+- **取密钥的超时 10 秒 → 30 秒。** 那个子进程是拿 WorkBuddy 的 Electron 二进制当普通 Node 跑，冷启动第一次 spawn 实测就要 4.5 秒。碰上同时在跑 pnpm install、或者杀毒软件在全盘扫描，10 秒预算直接被击穿 → 所有加密凭据被读成"未登录"，还要再背 60 秒负缓存。成功结果本来就是进程级缓存，加长预算最多只付一次。
+- **补上盘符根目录。** `D:\workbuddy\`、`D:\workbuddyai\` 是真实安装位置，可我们只扫 `Program Files`，一级扫描永远够不着它们。
+- **顶层 IIFE 补 `.catch()`。** 那个 IIFE 里的 `await` 一旦失败就变成 unhandled rejection，在 `installFailLoud` 下同样是直接杀宿主。
+- **保存收益账本失败不再拖垮宿主。** 这条来自社区反馈：以前 scheduler 把「写 settings」的调用放在 `try` 里但**没 await** —— 而 `try/catch` 只抓得住同步抛错，Promise 的 rejection 会直接漏成 unhandled rejection，在 `installFailLoud` 下就是 `exit(1)`。那位朋友遇到的正是这个：打开设置页 → 读状态 → 滚动收益账本 → 写盘失败 → 整个 DSH 起不来。他把原因归到「写入方法名从 `set()` 改成了 `update()`」，那确实是当时那一次抛错的直接原因（我们 1.6.0 已经改过了），但**结构上的隐患当时还在**：只要保存以任何理由失败（服务缺失、文件被锁、校验不通过），宿主照样会崩。现在给持久化回调的返回值挂上 rejection 处理，同时保留同步抛错的原有兜底 —— 保存失败只会记一条 warning，账本继续在内存里服务卡片，绝不影响已经领到的奖励。
+### 验证
+- `typecheck` / `typecheck:client` 全绿；vitest **222 用例全绿**（原 198 + 新增 24）。
+- 新增 `tests/host-compat.test.ts`：两条线的注册分支互斥且都不抛、两个 API 都没有时只 warn、全部字段都标了 volatile、活引用的浅 / 深解引用、`inject` 不含互斥服务名、注册槽位是 `settings.section`、0.1.7 用条目 id / 0.1.5 用 namespace、整页无折叠且轮询不再依赖展开状态、左栏名称与图标注入、异步持久化失败不产生 unhandled rejection（该用例经反向验证：还原成旧写法时它会失败）。
+- 拿**真实的 0.1.7 schemastery 3.18.4** 解析**真实的 Config**（12 个字段全部变成活引用、schema 校验无异常）；再用假宿主加载真实产物 `lib/index.js` / `lib/client.js`，确认 `apply()` 在 0.1.7 / 0.1.5 / 两个服务都没有 这三种情形下都不抛异常。
+- `lib/` 与 `src/` 同步重建（不然从 GitHub 源码装的人拿到的还是旧产物）。
+### 最后
+这一版由用户在本机 DSH Desktop 2.0.14（内核 0.1.7-rc.1）实测确认：**入口出来了、卡片显示了、名字和图标都对了。**
+感谢反馈问题的朋友 —— 那个"日志戛然而止"的现象描述得非常关键，否则光看日志根本无从下手。
+## 1.6.1 (2026-09-24)
+### 同机双桌面 build：凭据按各自 keyId 解开
+国内 `WorkBuddy.exe` 与国际版 `WorkBuddyAI.exe` 各自独立密钥，每个加密字段的
+envelope 里带 keyId。同机双 build 时，旧 opener 假设"全局唯一一把密钥"，
+keyId 不匹配就报 `ciphertext 错误 / 找不到账号`。
+修法：`encryptedFieldOpener` 先预热密钥缓存，再返回同步闭包，按字段
+`envelope.keyId` 用 `atRestKeyFor` 选对应 build 的密钥；无 build 能提供该
+keyId 时报"此字段无可用密钥"而非静默空串。
+回归测试 +3（全仓 198）：不同 keyId 各用自身密钥解开、无 build 提供时抛错、
+错误密钥在场仍命中正确 key。
+## 1.6.0 (2026-09-24)
+这一版修的都是「已装、已登录，插件却说找不到 App / 存不进去」这一类误报。
+### 一、WorkBuddy 装在非系统盘时找不到 App（社区反馈 + 本机复现）
+报错：`holds encrypted credentials but the desktop app could not provide the key`，
+但 App 明明装着并在运行。
+根因：Windows 只探测四个固定在**系统盘**的路径，而实际安装位置是自定义盘符 ——
+本机实测两个 App 都在非默认位置，且**国际版的文件名都不一样**：
+```
+D:\workbuddy\WorkBuddy.exe        国内版 5.5.3
+D:\workbuddyai\WorkBuddyAI.exe    国际版 5.6.2   ← 文件名都不同
+```
+修法（三层，按可靠性排序）：
+1. **读注册表**（最权威）——安装器自己记录的 `DisplayIcon` / `InstallLocation`，
+   不管装在哪个盘、目录叫什么、可执行文件叫什么都能找到；
+2. 环境变量 `WORKBUDDY_APP_EXECUTABLE`（用户显式指定，优先级最高）；
+3. 兜底枚举：`ProgramFiles` / `ProgramW6432` / `ProgramFiles(x86)` / `LOCALAPPDATA`，
+   **外加所有固定盘符**的 `Program Files`，再向下扫一层匹配 `workbuddy*` 目录。
+同时补上国际版可执行文件名 `WorkBuddyAI.exe` —— 它此前从未进过候选，
+所以哪怕路径对了也找不到。
+**实测验证**：注册表方案在本机正确发现两个 App，且用国内版 App 派生的密钥
+能解开国际版凭据（两个 App 共用同一个构建期密钥，`keyId` 完全匹配）。
+### 二、报错文案不再误导
+原文案暗示「去装 App」，而用户 App 就装着。现在区分两种情况，并给出真正可执行的指引：
+设置 `WORKBUDDY_APP_EXECUTABLE` 指向实际路径，并明说**重新登录无效**
+（凭据本身是好的，缺的是密钥）。
+### 三、读账号很慢 / 重新检测账号也报错
+每次读凭据都会 spawn App 并等待 10 秒超时；一旦失败，逐个凭据文件再来一遍。
+新增**失败负缓存**（60 秒）：一次失败后短期内不再重试，
+既让「扫描账号」瞬间返回，也保证装上/启动 App 后无需重启 DSH 就能恢复。
+### 四、「保留积分」保存报 `settings service unavailable; creditReserves was not saved`
+**这是我 1.5.0 引入的 bug**：校验写入了不存在的 API。
+本版 `dsh-settings` 暴露的是**按命名空间**的写入方法，没有 `set(key, value)`：
+```
+update(ns, patch, expectedRevision)    // 把 patch 合并进该命名空间的用户层
+replace(ns, section, expectedRevision)
+mutate(ns, ops, expectedRevision)
+```
+现在改用 `update(ns, { [key]: value })`。**「await + 回读校验」的理念保持不变**
+（它确实抓到了问题，只是抓错了原因）——写入后仍然回读文档比对，不一致就报错。
+### 测试
+188 → 195（新增 `app-location.test.ts` 7 例：注册表优先、override 优先、
+多盘符与文件名变体、macOS 仍走 bundle 而不碰注册表）。
+## 1.5.3 (2026-09-24)
+### 内核依赖对齐 DSH 实际版本，消除「需要 0.1.7」的歧义
+`devDependencies` 里十个 `@deepseek-ai/dsh-*` 包原先钉在最老的版本
+（`0.1.1-rc.2` / `0.1.2-rc.1`），而插件实际运行在 DSH Desktop 2.0.13 捆绑的
+**`0.1.5-rc.2`** 上——开发环境与运行环境不一致，正是姊妹项目踩过的那类坑
+（用旧类型构建、或反过来用新类型构建跑在旧内核上）。
+现在钉到 **`0.1.5-rc.2`**，与实际运行内核一致。`dsh-client-runtime` 例外：该包
+已停止发布（最后版本 `0.1.1-rc.2`），保持不动。
+**peerDependencies 未改**，仍是最宽的 `>=0.1.1-rc.1 <0.2.0`。实测（semver）该范围
+同时接受 `0.1.5-rc.2` 与 `0.1.7-rc.1`，比 `^0.1.5-rc.1`、`^0.1.5-0` 都广，所以
+插件本身从来没有版本不兼容——市场页面上那句「需要 DSH >=0.1.7-rc.1」是市场对
+预发布范围的判定方式所致，不是插件声明有误。
+内核 `0.1.7-rc.1` 目前只在 npm 的 `next` 通道（`latest` 仍是 `0.0.1-rc.1`），
+属于预发布；内核版本由 DSH Desktop 应用捆绑，需等官方发新版桌面端才能跟进。
+### 测试
+仍为 188 通过（本次只改依赖声明，无代码改动）。
+## 1.5.2 (2026-09-24)
+### 修掉测试对运行时区的依赖（发布流程在 CI 上红了）
+1.5.0 把签到的小时判定改成显式 `Asia/Shanghai` 之后，测试却仍在用
+`new Date(2026, 8, 7, 10, 30)` 构造时刻——那是**本机时区**的 10:30。本机在 UTC+8 时
+恰好等于北京时间 10:30，所以本地全绿；换到 UTC 的 CI 上，同一时刻变成北京时间 18:30，
+于是 `isFireHour(..., [10])` 返回 false，四个用例集体变红。
+**代码没问题，是测试的构造方式错了**：用一个「运行机器时区」的输入去断言一个
+「固定北京时区」的实现，结论必然随机器而变。
+修法：测试里所有时刻改用 `beijing(y, m, d, h, min)` 显式构造（`Date.UTC(h - 8)`），
+并新增一条用例专门钉住「同一个瞬间在任何时区下判出同一个小时」。
+验证：`UTC` / `America/New_York` / `Asia/Shanghai` / `Europe/London` **四个时区各跑一遍，
+均 188 通过**。
+（顺带修好一处漏掉的 `AUTOMATION_JOB_KINDS` import——它让「卡片与调度器任务列表一致」
+那条用例在 UTC 下失败。）
+## 1.5.1 (2026-09-24)
+### 「保留积分」改成填完点保存，并且告诉你存没存上
+上一版修好了写入不落盘却报成功的问题，但交互仍然不好：输入框**一失焦就自动提交**，
+你既没有明确的「保存」动作，也不知道到底有没有生效——失败了只在卡片顶上飘一行提示，很容易错过。
+现在：
+- 输入框只是草稿，**不再失焦自动提交**（回车或点「保存」才会写入）。
+- 「保存」按钮只在草稿与已存值不同时可用，避免误点与空提交。
+- 结果**就地显示在按钮旁边**：保存中… / 已保留 N 积分 / 保存失败，请重试。
+- 保存成功后本地立刻定格新值，不用等下一次轮询——这是「重开又不显示」观感的直接解法。
+- 输入框加了聚焦态（绿色描边），宽度从 76px 调到 84px。
+### 测试
+187 通过（本次为客户端交互改动，未新增用例）。
+## 1.5.0 (2026-09-24)
+这一版修四处实报问题，其中第一处直接决定 Mac 用户能不能用。
+### 一、Mac 上 WorkBuddy 5.6.2「获取不到账号」——桌面端加密了凭据
+现象：Mac 上 App 装着、也登录着，插件却一个账号都列不出来。
+根因不在路径，在**加密**。WorkBuddy 桌面端从 **5.6.0 起**把 auth 文件里的
+`accessToken` / `refreshToken` / `nickname` 从纯字符串改成了加密信封
+（`{"$wbEncrypted":1,"envelope":"…"}`，AES-256-GCM），而且 **macOS 与 Windows
+同样如此**——此前「只有 Windows 加密」的判断是错的。原来的读取代码是
+`typeof auth.accessToken === 'string'`，遇到信封对象直接判定「没有凭据」，于是
+把「已登录」误报成「未登录」。
+修法（`src/at-rest.ts` 新增 + `src/accounts.ts` 接入）：
+- 向**本机已安装的 App 自己**索取字段密钥：用 `ELECTRON_RUN_AS_NODE` 跑它的原生绑定
+  (`electron_browser_workbuddy_storage.loggerGet()`)，就地派生密钥。插件不内置任何密钥
+  副本，密钥只在进程内存缓存、不落盘。
+- 二进制定位改为**问 bundle 自己**：macOS 的 `CFBundleExecutable` 是 `Electron`
+  而不是 `WorkBuddy`，按 App 名拼路径永远找不到 App。候选含国际版 `WorkBuddy AI.app`，
+  并支持 App 被归入 `/Applications/子目录/`，扫到的候选先用 `CFBundleIdentifier`
+  确认身份才执行（每个 Electron 应用的二进制都叫 `Electron`，只按名字匹配有风险）。
+- **「未登录」与「登录信息读不出来」不再共用一句话**：加密但拿不到密钥时抛
+  `WorkBuddyEncryptedCredentialError`，文案指向「装 App / 用 `WORKBUDDY_APP_EXECUTABLE`
+  指定位置」，并明说**重新登录没用**——因为凭据本身是好的。
+### 二、签到到点不跑
+两个独立原因，都会让 09:00 的签到静默错过：
+- **时区**：判定用 `date.getHours()`（本机时区）。活动窗口按北京时间定义，机器时区不是
+  北京时就会错点。现改为显式 `Asia/Shanghai`（`AUTOMATION_TIME_ZONE`）。
+- **错过不补**：原来要求「当前小时正好等于配置小时」。DSH 在 09:00 没运行（或笔记本睡过去了），
+  10:00 再启动时 `10 ∉ [9]`，当天就再也不跑。现改为**补跑**：只要配置的小时已过、且该时段
+  当天未跑过，下一次 tick 立即执行。
+### 三、字体太淡 + 时间显示不全
+- 自动化面板里时间戳（`上次运行` 那列）被左侧名称以固定 `72px` 挤掉，且没有 `nowrap`，
+  长日期会被换行/截断。现给该列独立的宽度策略与 `white-space:nowrap`。
+- 一批文字用了过淡的 `#8a97b5`（`auto-hint` / `auto-total-label` / `earned-label` /
+  `auto-switch` 等）与 11px 字号，对比度不足。统一提到次级色 `#c6c9d0`、字号 12px。
+### 四、「保留积分」填了数值、重开还是 0
+根因是**写入没有校验**。`setSetting` 原来是 fire-and-forget：不 await、不问结果，
+于是「settings 服务 resolve 了但值没落盘」这种失败会**被报告成保存成功**，卡片显示已保存，
+下次读取又变回 0——用户无法判断到底有没有生效。
+修法：`setSetting` 改为 async，**await 写入 + 回读文档校验**，不一致就抛错，
+由路由返回失败、卡片显示出来。比较用忽略键序的深比较（`stableJsonEqual`），
+否则两个内容相同、键序不同的对象会被误判为「没落盘」。四处写入（保留积分、账号启停、
+模型选择、积分台账）全部走这条路径。
+### 测试
+新增 16 例，总数 171 → **187**：加密凭据 7 例（含「不可解密必须报 ENCRYPTED 而不是未登录」、
+「密钥不对不能返回垃圾」）、落盘校验 6 例（含「setter resolve 但没存必须抛错」）、
+签到补跑 2 例、以及既有的调度/凭据用例随语义更新。
+### 溯源
+`src/at-rest.ts` 移植自 [dingminhua/dsh-connect-workbuddy](https://github.com/dingminhua/dsh-connect-workbuddy)
+（MIT, Copyright (c) 2026 LaoDing）——该模块最先定位并修复了「5.6.0 起 macOS 也加密凭据」
+（其 issue #15 真机取证）。移植保留其全部判定逻辑，未作改动。
+## 1.4.1 (2026-09-24)
+### 修了：hy3 超长对话还是会弹 400
+1.4.0 让溢出消息能被 Harness 认出、并给 shim 加了本地压缩，但 hy3 仍然会爆。根因是
+**窗口值写错了**：catalog 里 hy3 的 `contextWindow` 填的是 `200_000`，而它真实上限远小于
+此。shim 压缩时按「估算 token 数的一半」设预算（约 100K），DSH 压力触发也按 200K 算，
+两侧都以为 200K 够用，所以压缩到 100K 仍远超真实窗口，重试再次溢出。
+修法：
+- catalog 里 hy3 的窗口改为真实值 `32_000`（同步把 `maxOutputTokens` 从 128K 调到 8K）；
+- `recoverFromContextOverrun` 不再用「估算一半」，而是用模型**真实**窗口算预算
+  （`realWindow * 0.8 - 2048`），并在调用处把 catalog 的窗口传进去。
+这样无论 DSH 外层还是 shim 内层，都按真实窗口压缩，不会再把压过的 prompt 发到真实窗口之外。
+- 新增 `context-budget-real-window.test.ts` 钉住这个回归（含「hy3 不再声明 200K」）。
+## 1.4.0 (2026-09-24)
+### 长对话不再撞死在上下文上限上
+以前聊到一定长度，就会弹出一个 `400 context_length_exceeded` 然后被送回主页，只能重开会话。
+现在会自动收缩上下文继续跑，不再打断你。
+这里其实有两层保险，各自管不同的情况：
+**第一层是 Harness 自带的。** DSH 本来就装了 `compaction-basic`，它会在发请求之前先算一遍 token
+压力，超了就摘要、重试。问题是它认错误的方式是「看这段文字像不像上下文溢出」，而插件原来报的是
+一句友好英文 —— `the conversation exceeds <模型名>'s context window` —— 恰好是它唯一认不出来的
+那种写法。于是它以为这是个普通的坏请求，跳过了恢复，直接把 400 抛给你。
+（顺带一个坑：上游 WorkBuddy 自己那句 `input length too long`／业务码 `11115`，同样不在它的
+识别清单里。所以「把上游原话原样透传」这条路也走不通，必须主动改写成它认得的措辞。）
+现在溢出时会输出它认得的写法，Harness 的自动摘要就接上了。
+**第二层是插件自己的。** 就算 Harness 那层没兜住（比如窗口值报得不准，或者你一口气粘了个巨大
+文件），插件会自己压缩一遍再重试一次：先丢最旧的回合，保留 system 和最近几轮；还放不下就把被丢
+掉的回合交给模型做个摘要塞回去；再不行才硬截断。摘要这一步哪怕失败也只会降级成直接截断，绝不
+会反过来让你的这一轮请求失败。
+### 「API 密钥无效」不再把所有账号卡死在第一个上
+账号池的本意是：某个号不行就换下一个。但错误分类里有个漏洞 —— HTTP 401 只有在响应体里恰好
+出现两条特定标记之一时，才会被认成「登录态失效」（可刷新、可轮换）。上游换个说法，比如
+「api密钥无效」、`invalid api key`、`unauthorized`，就掉进了兜底的 `client` 类。
+而 `client` 在轮换循环里是**终态**：直接 `break`，不再试后面的号。结果就是一个坏掉的号把整个池
+钉死在第一个账号上，2/3/4 号全都白装着。
+现在 401 和 403 无条件算「登录态失效」—— 刷新 token 然后换下一个号。另外把常见的中英文失效措辞
+也补进了标记清单，这样即便状态码不是 401（比如被包在 200 信封里）也还能认出来。
+### 其它
+- 顺手修了个压缩逻辑里的真 bug：它用同一个变量同时表示「留下来的」和「被丢掉的」，结果明明已经
+  砍到只剩几条，却报告「没有变化」，导致摘要功能整个跳过、根本没执行。
+- 新增两组测试：`context-overflow-contract.test.ts` 逐字复刻了 Harness 的错误匹配规则（它将来改
+  措辞时这个测试会变红，提醒你同步改）；`upstream-error-classification.test.ts` 钉住了上面那个
+  401 分类回归。
+## 1.3.0 (2026-09-23)
+上一版把八类任务链接了进去，这一版修的是**「接进去了但你看不见」**的问题——功能在跑，界面上却没显示，等于白做。
+### 猫猫旅行一天只跑一趟，等于坏了一半
+旅行的流程是「派出去 → 回来领奖」，需要**两趟**。原来默认时段只配了 12:00 一个点，意味着猫早上出去之后，**要等到第二天**才有人管它。
+改成 **09:00 + 21:00 两趟**（早上派出去，晚上回来领）。同时把每个任务的「今天跑过了」判断从**按日期**改成**按时间点**——按日期判断会把晚上那趟直接吞掉，这个守卫跟多时点本身是冲突的。单时点任务（签到、上报、任务奖励、连登）行为不变，同一小时内重复检查仍然不会重复跑。
+> 参考项目的默认值就是 `[9, 21]`，注释里写的理由是「一趟派出 + 一趟领奖闭环」。
+### 卡片现在告诉你「具体领到了什么」
+原来每个任务只显示「日期 · 账号数」，回答不了「我最在意的那个任务领到了没」。
+现在会**列出这一轮实际领到的奖励名**：
+- 任务奖励 → 列出台任务标题（如「体验设计创意模式」「召唤 3 次专家团」）
+- 每日签到 → `签到 +100`
+- 猫猫旅行 → `猫猫旅行 +10`
+连登奖励还没到解锁天数时，会显示**还差几天**（如 `7d in 4d`）——所有档位都是未解锁属于正常状态，但只写「未解锁」会让人以为坏了。
+### 修掉「猫猫旅行永远不显示」
+有个真 bug：积分自动化面板里只显示签到 / 上报 / 任务 / 连登四行，**猫猫旅行那行永远不出现**，尽管它确实在跑。
+根因是那行任务的判断逻辑里，**列表本身就是缺的**——界面渲染一行一个任务，而列表里没有 travel，分支里也没有，类型定义里同样没有。这类「加了功能忘了加列表」的失败模式是**静默的**：任务照跑，用户看不见，也不会报错。
+除了补齐三处，还加了个**防回归测试**：卡片的任务列表必须和调度器的任务列表逐项相等、顺序一致。这个不变量之前没人守。
+### 其它
+- 行内文案「未排程 / 尚未执行」改成「当天不跑 / 还没跑过」，原来的说法不好懂。
+- 补上中英两份缺失的「猫猫旅行」标签（之前那行显示的是原始 key）。
+- README 重写（中英双语）：按「多账号池」和「积分自动化」两块组织，把 13 个任务名列出来、实测数据写进去，并把几个踩坑结论翻译成大白话。
+- 截图更新：卡片全貌换成含自动化面板的新版，另加一张自动化面板特写。
+- 测试从 134 增至 139。
+### 已知限制（未变）
+- `Expert_Philanthropy`（公益专家）需要真实捐款，不做。
+- `black_cat`（夜猫子）只在 23:00–08:00 计分且无积分奖励，不做。
+- `Model_chat_GLM5.2` 与 `wb_wechat_oa_subscribe_task` 留待下个版本。
+- `Expert_team_use_3` 偶发卡在 2/3（怀疑单账号当日额度，跨天恢复，未验证；新账号不受影响）。
+## 1.2.0 (2026-09-23)
+把成长中心剩下的**八类客户端任务**也接进自动化。这些任务在任务中心里写的是「升级桌面客户端后点击某个入口」，听起来只有人坐在真实客户端前才能完成；实际上计分器看的是**行为事件流**，只要事件形状对、指纹对，任务就会涨进度。这一轮把每条链都在真实账号上跑通并回读确认了计分。
+### 新增的任务链
+| 任务 | 积分 | 判据 |
+| --- | --- | --- |
+| 探索优秀灵感 | +100 | `web_element_click` + `playbook_cta_click` + `playbook_prompt_send` 事件组（「发提示词」才是判据，不是卡片曝光） |
+| 使用 5 个模板 | +100 | 五组 `agent_task_created_with_template` + `template_used`，判据是**五个不同模板**，所以一次要发五组 |
+| 尝鲜热门技能 | +100 | 真实对话（**服务端** requestId）+ `skill_info`（润泽小馆·日报撰写），响应要标成 `finishReason: tool_calls` |
+| 体验「和平精英」主题 | +100 | `appearance/set` 存主题 + `appearance_skin_apply` 事件，两者缺一不可 |
+| 体验资料库 | +100 | 走 **web 指纹**上报 `library_doc_intro_click` |
+| 召唤 5 次专家 | +100 | 专家市场真实 id + 召唤链 + 带 `X-Expert-Id` 的真实对话 |
+| 召唤 3 次专家团 | +100 | 同上，`expert_type=team` |
+| 体验轻量云专家 | +100 | 同上，但用事件要 `mode: LOCAL`、`type` 留空、`cost=0` |
+### 这一轮踩到并修掉的两个坑
+**专家链之间必须留间隔。** 连着发两条专家使用，计分器会判成**同一次会话**，只涨一个进度。实测：间隔 300 毫秒时两条链只计一条，拉到 6 秒后每条都计。专家任务因此改为链间固定 6 秒（`EXPERT_SUMMON_GAP_MS`，测试里置 0）。
+**三类指纹不能混用。** 计分器按任务认不同的指纹家族：`Library_read` 只认 web 指纹，用桌面指纹发同样的 `web_element_click` 会被接受然后丢弃。事件链现在自带「走哪个通道」，由调度器分流到 `reportDesktopEvents` 或 `reportWebEvent`。
+### 其它改进
+- 事件链从调度器里搬到了独立的 `task-events.ts`：调度器决定**什么时候**发，这个模块决定**发什么**，每条链都是纯数据，好读也好测。
+- `WorkBuddyScheduler` 及其常量现在从包入口导出，方便直接写脚本验证，不用绕过卡片走 HTTP。
+- 新增 64 个测试（`task-events` 21 个 + 调度器链路 22 个 + 专家间隔等），全量 134 个通过。
+### 已知限制
+- **`Expert_team_use_3` 有个号停在 2/3**：该账号当天已用掉两次专家团，第三次不再计分，换未用过的专家团也不涨。怀疑是该任务对单账号有当日额度，跨天恢复，暂未确认。新账号不受影响（实测 0/3 → 3/3）。
+- **`Expert_Philanthropy` 不做**：需要真实捐款，没有可绕过的路径。
+- **`black_cat` 不做**：只在 23:00–08:00 计分，且纯对话无收益。
+- **`Model_chat_GLM5.2` 与 `wb_wechat_oa_subscribe_task` 未接入**：实现路径已明确（前者要真实 glm-5.2 对话 + 对齐模型字段上报），留下个版本。
+## 1.1.0 (2026-09-23)
+新增**积分自动化**：插件可以在后台替你完成成长中心的日常动作，不用每天手动点一遍。
+### 它是怎么工作的
+开启后，调度器每分钟醒一次，到点就跑当天的任务，每个任务每天只跑一次（按本地日期记「今天已跑」，过零点自动重置）。四个任务各有独立的执行时段，默认这样安排：
+| 任务 | 默认时段 | 做什么 |
+| --- | --- | --- |
+| 每日签到 | 09:00 | 领取当天签到奖励 |
+| 活跃上报 | 10:00 | 上报一次对话活跃 |
+| 任务奖励 | 11:00 | 报名开放任务 + 领取已达标的奖励 |
+| 连登奖励 | 12:00 | 连登档位兑换 + 抽奖（本轮先占位，下轮接入） |
+**为什么上报排在任务之前**：上报会点亮成长中心的任务进度，后跑的任务那一趟才能读到刚涨上去的计数。顺序反了就会出现「进度明明到了却没领到」。这不是随手排的，是实测出来的。
+### 一、任务中心自动领取
+每个账号走一遍：拉任务列表 → 把还没报名的任务批量报名 → 把已达标的奖励逐个领掉。卡片上汇总显示本次领取了几个任务、加了多少积分。
+两个动作都是**幂等**的，重复跑不会重复入账：报名对已报名的任务返回成功，领取对已领过的返回 `already_claimed` 并记为成功。所以某个账号中途失败、下一轮重跑是安全的。
+### 二、活跃上报
+按客户端 `chat_request_send` 事件的完整形状上报（37 个字段），而不是只发最小几个字段——上游对「字段不全」的表现是**返回 200 然后静默丢弃**，所以字段必须发全，且必须带 `userId`。
+上报成功后会回读连登天数做验证。这里有两个实测踩到的坑，都已规避：
+- 连登接口的路径**不带 `/v2` 前缀**（和任务的 `/v2/activity/growth/*` 不一样）。用错前缀不会 404，而是返回一个没有 `streak` 字段的响应；
+- 天数藏在 `data.streak.days` 里，读平铺的 `data.days` 会永远得到 0，从而把每一次成功的上报都误报成「静默丢弃」。
+另外，连登计数是**异步写入**的：上报后立刻回读可能还是旧值（实测某账号上报瞬间读到 0、一分钟后读到 1）。所以回读为 0 时只记一条提示日志，**不重试**——上报本身按天幂等，反复重发只会浪费每天一次的名额。
+### 三、只碰该碰的账号
+- **国际版账号全部跳过**：global 域没有成长任务体系，调用只会产生噪声。
+- **你在卡片上关掉的账号跳过**。
+- **正在冷却的账号跳过**。
+- **一个账号失败不影响其他账号**：出错的那个跳过，继续跑下一个，并在汇总里记下失败数量。
+账号之间默认间隔 800ms 串行执行，避免一排账号同时打上游。
+### 四、卡片上的自动化面板
+账号卡片新增「积分自动化」区块：一个开关控制总开关，开启后才展开显示各任务的执行时段和上次执行结果（日期 · 成功数/失败数）。
+开关默认**关闭**——后台自动发请求这件事应该是你主动开启的。关闭状态下不会发起任何后台请求。
+### 配置
+配置项 `automation`，对应卡片上的开关：
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `enabled` | `false` | 总开关 |
+| `checkinHours` | `[9]` | 签到时段 |
+| `reportHours` | `[10]` | 上报时段 |
+| `taskHours` | `[11]` | 任务时段 |
+| `streakHours` | `[12]` | 连登时段 |
+| `exhaustCooldownMs` | 30 分钟 | 账号额度用尽后休息多久 |
+### 实测结果
+在真实账号上验证了完整链路：4 个国内账号各领到 1 个任务，合计 **+600 积分 +23 能量**；紧接着再跑一次，四个账号全部领取 0、入账 0，确认幂等。上报后任务进度确实从 3/5 涨到 5/5，验证了「上报点亮任务」这一步是真的。
+## 1.0.1 (2026-09-23)
+修复两个用号逻辑上的缺陷，并把账号卡片重新排了一遍。
+### 一、「当前使用」显示的账号不对
+卡片上显示的账号，是你**最近一次实际在用**的那个吗？之前不是 —— 它显示的是「**准备尝试**」的账号。
+举个例子：某个账号积分用光了，插件去试它、失败、自动换到另一个号继续服务。但你确实在用（换号成功了），卡片却还显示那个已经废掉的号。
+现在改成**只有请求真正成功**才记录，所以显示的永远是你实际在用的那个。
+### 二、账号积分用尽时，会直接把错误抛给你
+上游有两种"不让用"：
+| 情况 | 含义 | 之前的表现 |
+| --- | --- | --- |
+| **频率限制** | 这个号暂时被限流，等会儿能恢复 | 正确：冷却这个号，**自动换号** |
+| **额度用尽** | 这个号这个周期的积分花完了 | ❌ **直接报错给你**，不换号 |
+现在额度用尽也会**自动换到有积分的账号**，并把那个号整体停用 30 分钟（不是只停用某个模型）。请求不会再因此失败。
+### 三、账号卡片排版重做
+- 每个账号的**开关**做成了胶囊按钮（和「账号使用方式」同一套样式），一眼能看出是开还是关
+- 账号卡**分层更清楚**：标题行（名字｜状态｜开关）→ 分隔线 → 信息与积分两栏
+- 去掉了多余的边框和重复信息（不再显示 `www.workbuddy.cn` 这类域名 —— 上面的区域标签已经说明了）
+- 新增顶部「**当前使用**」提示条，一眼看到正在用哪个号
+## 1.0.0 (2026-09-21)
+这一版把「账号」和「用号方式」都交给你控制。
+### 一、可以停用不想用的账号了
+账号列表里每个账号右侧新增一个开关，关掉它这个账号就**不再参与请求**。
+- 关掉的账号仍然显示在列表里（变灰），随时可以再打开
+- 设置会被保存，**重启 DSH 后依然有效**
+- 只影响路由，不会删除或改动你的登录凭据
+### 二、新增「均衡」用号模式
+原来的两种方式都保留，另加一种：
+| 模式 | 行为 |
+| --- | --- |
+| **优先**（默认，行为不变） | 一直用同一个账号，直到它被限流才换下一个 |
+| **均衡**（新增） | 每个可用账号都参与抽取，**闲置越久权重越高** |
+| **轮换** | 严格轮流，把额度摊平 |
+**为什么需要「均衡」**：默认的「优先」会死磕第一个账号，把它打到限流才换 —— 如果你有 5 个号，其余 4 个基本闲着。切到「均衡」后请求会自然分散到各个账号，**更不容易撞限流**，可用时间更长。
+在卡片顶部「账号使用方式」里切换，即时生效。
+### 其他
+- 显式选定的账号（如卡片上「下一个」标记的那个）在三种模式下**都会被优先使用**
+- 处于冷却中的账号在「均衡」模式下**一定不会被选中**，冷却结束自动回到抽取池
+## 0.4.5 (2026-09-21)
+本版**功能与 0.4.4 完全相同**，只是换了一条发布通道。
+### 为什么会有这个版本
+0.4.4 的改动没能通过 npm 发出去：账号的两步验证绑的是**安全密钥（passkey）**，而 npm 命令行发布只接受**认证器 6 位数字码**，两者不通用。
+现在改为由 **GitHub Actions 自动发布**：给仓库打一个 `v*` 标签，GitHub 就用 OIDC 直接把当前版本发到 npm —— **不需要任何 token，也不再需要验证码**。
+所以请以 0.4.5 为准，它包含了 0.4.4 的全部修复（图文模型贴图、国内版/国际版模型勾选各自独立）。
+### 顺带修好的构建问题
+有 3 个依赖此前只在开发机上"碰巧"存在（靠历史安装残留），别人克隆仓库后跑测试会直接失败。现已正式写进 `package.json`，干净环境也能正常构建与测试。
+## 0.4.4 (2026-09-21)
+这一版修两个毛病：给「支持图片」的模型贴图会报错，以及国内版和国际版的模型勾选会互相覆盖。
+### 一、贴图报错
+选「图文」模型贴图时，会报 `pi-ai image input requires the durable attachment service`。
+上一版把模型真正的图片能力修对了，贴图于是改走「原生图片通道」。但这条通道要求插件把宿主的**图片存取服务**接上，而插件一直没接 —— 以前所有模型都被当成「不支持图片」，这条路根本走不到，所以问题一直藏着。
+现在把这一步补上了：插件接上宿主的附件服务与文件服务，图片能被正常读取并随请求发出去。这只是「把该接的线接上」，图片本身仍是原样发给模型。
+### 二、国内版和国际版的模型勾选不再互相覆盖
+之前两个版本共用同一份模型勾选，所以：在国内版勾好几个模型保存，再切到国际版勾另一套保存，**前面那份就被覆盖了**，两边最终都变成后保存的那一套。
+原因是两边的选择存在同一处，写入时也是往同一个地方写。现在改成**各自独立保存**：国内版一套、国际版一套，互不影响。切 tab 时未保存的改动也不会串到另一边。
+升级后原来的那份勾选会被两边同时沿用，不用担心配置丢失 —— 之后各改各的即可。
+## 0.4.2 (2026-09-19)
+这次主要修了三个毛病。
+### 一、国际版账号终于能被识别了
+之前国际版账号一直检测不到。原因是筛选登录文件时只认「点号」拼出来的文件名，而国际版客户端登录后生成的文件是 `workbuddy-desktop-ai.info`（中间是连字符），于是被整个跳过了。
+现在改成只看文件后缀，不管文件名长什么样都能收进来。实测国内版 4 个、国际版 1 个账号都能正常识别。
+### 二、国内版和国际版不再共用同一份模型列表
+之前两个版本共用同一份模型清单，而且这份清单只从国内版账号拉取 —— 换句话说，国际版看到的其实一直是国内版的模型。
+现在两个版本各查各的：
+- 国内版：16 个模型
+- 国际版：21 个模型（之前只有凑数的 10 个，而且内容还是国内版的）
+国际版独有的 Auto / Fast / Balanced 这些模型现在也能正常显示。
+顺带修了国际版读取模型的方式：它的接口地址和客户端标识跟国内版都不一样，之前照搬国内版的写法，国际版那边会直接报错，所以才一直退回那份凑数的清单。
+### 三、模型选择器里同一个供应商不再被拆成两组
+之前模型选择器里「WorkBuddy XD Pool（国内版）」「（国际版）」会各出现两次，免费模型和付费模型被分到不同的组，中间还夹着别的插件，看着像重复注册了。
+根因是插件把每个模型都上报成「不支持图片」。宿主上如果装了图片增强类插件，它会给这些模型再补一条**名字一模一样**的条目，于是同一个名字就出现了两遍。
+现在按上游真实的能力上报，分组就合并回来了。
+另外卡片里的「图片输入」勾选也改了语义：勾选只表示**额外**支持图片，不会再反过来把没勾选的模型降级成「不支持」。
+## 0.4.0 (2026-09-16)
+本次更新来自两条用户反馈与一次上游兼容性对齐：账号现在可以**按顺序逐个用尽**（不再平均分摊），积分包**逐条显示具体到期时刻**，并修掉了一处会让所有接口返回 401 的凭据选择缺陷。
+### 新增
+- **账号使用方式可切换（优先 / 轮换）**：卡片状态行下方新增开关，默认**优先模式**。
+  - **优先模式**：始终由同一个账号服务，直到它被限流才顺延到下一个；冷却结束后它**立刻回到队首**接管 —— 该账号的积分在冷却期间并未被消耗，所以无需从头排队。
+  - **轮换模式**：保留原来的平均分摊行为，供希望把额度摊平到各账号的用户选择。
+  - 切换**即时生效**并写入插件设置，**对所有账号、所有切换状态通用**，不需要重启宿主。
+  - 优先级顺序是确定性的：桌面 App 当前登录的账号 → 上游签发时间较新者 → 存储过期时间较晚者。此前顺序取决于文件名字典序，实际会出现 `0, 2, 1` 这类非预期排列。
+- **积分包逐条显示到期时刻**：原先只给出「3 天内到期」的合计数，看不到具体时间；现在每个积分包单独标注它的到期时刻（精确到分钟，例如「到期 09/19 15:36」），3 天内到期的以琥珀色高亮。月度周期套餐显示下次刷新时刻（「刷新 10/01 00:00」）。
+  - 之所以精确到分钟而不是只给日期：上游发放一次性礼包的到期时刻是**任意的钟点**，并非「过 0 点即失效」，只显示日期会让人误判。
+### 布局
+- **积分包列表改为两行网格**：包名与数量在首行左右分栏，到期时刻在次行跨栏并与包名左对齐。此前到期时刻被挤到第二行且从容器左边缘起排，列表看起来参差不齐。
+### 修复
+- **同一账号存在多个凭据文件时会选中已失效的那一个，导致积分 / 签到 / 模型全部返回 401**。此前按**存储的 `expiresAt` 最大**来挑选凭据，但 `expiresAt` 描述的是「签发时有效期有多长」，**不代表上游仍然接受** —— 上游吊销 token 时不会同步改写该字段，于是一个早已失效的备份可以声称比真实可用的文件**更晚过期**，从而被长期选中。
+  - 现改用 **`auth.lastRefreshTime`（上游自己的签发时间）** 作为新鲜度判据，并在解析凭据时读入该字段。排序优先级：① 桌面 App 当前登录的 live 文件 → ② 签发时间较新者 → ③ 存储过期时间（仅作为文档缺少签发时间时的回退，保证比较是全序的）。
+- **国际版登录域名识别不全**：参考桌面客户端自身的国际域名清单（`workbuddy.ai`、`workbuddy.cc`），并补充 CodeBuddy CLI 使用的 `codebuddy.ai`。此前只识别 `workbuddy.ai`，落在其他拼写上的国际账号会被误判为国内版，token 被发往国内网关而在 openresty 层被拒绝。
+- **国际网关写死单一域名**：国际版账号按品牌域名区分且**互不通用**（在 `codebuddy.ai` 签发的 token 会被 `workbuddy.ai` 网关拒绝，反之亦然），因此网关地址改为**跟随凭据自身的域**，未识别的域名回落至桌面端网关。chat / billing / referer / 模型目录四处一并生效。
+- **上游以 HTML 页面拒绝凭据时给出可执行提示**：识别 openresty / APISIX 的鉴权拒绝（401/403 且响应体是 HTML），改为提示「凭据已被上游网关拒绝，通常说明用的是旧登录留下的失效凭据；请重新登录 WorkBuddy 桌面端后在卡片中选择该账号」，不再原样抛出 HTML 片段。非鉴权类的非 JSON 响应保持原有的通用提示。
+- **部分模型不显示思考档位**：上游部分模型的推理元数据使用**单数形式**（`effort` 而非 `supportedEfforts`），此前该形态会被直接丢弃。现将其规范化为插件已理解的复数形状，并携带声明的档位到 `defaultEffort`。
+### 测试
+- 新增 `tests/pool-priority.test.ts`（10 例）：优先模式下连续请求命中同一账号、仅在该账号冷却后顺延、冷却结束后回归队首、按模型冷却不影响其他模型；轮换模式的轮转与运行时切换；凭据新鲜度的四类排序（live 优先、签发时间优先、缺失签发时间时回退过期时间、秒/毫秒单位归一化）。
+- 修正 `tests/failover.test.ts` 中依赖轮转顺序的限流桩：改为按**已出现的不同凭据数**计次，不再假设「token 序号即账号位置」，因此与账号排序解耦。
+- 全套 **36 个测试通过**。
+## 0.3.0 (2026-09-16)
+本次更新把卡片界面按参考插件的形态重做了一遍，并补齐了国内版 / 国际版的完整分离。
+### 新增
+- **国内版 / 国际版 拆成两个独立供应商**：`xdpool`（国内版）与 `xdpool-global`（国际版）分别注册为独立 provider，模型选择器里各占一个分组。两条链路各有独立的回环端点（各自端口与密钥），互不影响；账号按登录域名严格归属各自区域，国内版请求绝不会走国际版账号，反之亦然。
+- **卡片顶部新增「国内版 / 国际版」切换栏**：两个 tab 固定显示，各自带一个健康状态指示点。未登录的那一侧显示明确的空状态与**该区域的登录步骤**（含国际版客户端名称、可用的登录方式、网络环境要求），而不是一片空白。
+- **模型管理**：模型列表支持逐项操作 —— **勾选启用 / 停用**、**图片输入**单独开关、**上下文窗口**在「默认上限」与「模型原生上限」之间切换（仅对原生窗口超过默认值的模型显示）。改动为草稿式，需点「保存」生效，另有「放弃修改」。保存后**无需重启宿主**即可在选择器里生效。
+- 卡片截图新增「国内版 / 国际版切换」一张（中英 README 均已引用）。
+### 变更
+- **账号区与积分区重做排版**：账号信息、积分包明细、合计大数字与签到按钮改为分区网格布局，数字更醒目，签到按钮位于合计下方，不再多个区块横向挤在一起。
+- 模型行现在同时展示输出上限与推理档位（上游提供时）。
+### 修复
+- **切换 tab 后仍显示另一区域账号**：`refresh` 回调此前在依赖数组为空的情况下闭包引用了当前区域，导致切换后请求的始终是首次的区域。现改为把区域作为参数传入（回调身份稳定），并**按区域分别保存各自最近一次状态** —— 切换 tab 时不再闪空白，隐藏 tab 的状态指示点也持续有效。
+- **国际版域名识别不全**：桌面客户端把 `workbuddy.ai` 与 `workbuddy.cc` 同列为国际版域名，此前只识别前者，登录落在 `.cc` 的账号会被误判为国内版并请求错误网关。现已一并识别。
+- **模型勾选控件不可用（显示为灰色）**：客户端注册时未注入设置作用域，导致卡片判定为只读。现注入 `settingsScope` 并通过它写入模型选择 —— 该选择保存在插件设置中，**对所有账号、所有切换状态通用**，设定一次即可。
+- 保存的模型选择改由宿主的**模型发现接口**下发，使保存结果即时反映到模型选择器，而无需重启。
+- **两个 provider 一直显示「加载失败」**：注册适配器时构造的 provider profile 漏了 modelErrors 字段。宿主解析每个模型时都会读这个 Map，于是每次解析都抛 `Cannot read properties of undefined`，模型目录把它渲染成「{provider} 加载失败」。现已补上该字段（与参考插件一致），两个区域的模型解析全部恢复正常。
+- **provider 注册后设置页读不到配置作用域**：插件未在顶层 inject 中声明 settings 服务，宿主不会为该插件挂载设置视图，其 provider 行渲染时读取命名空间视图会得到 undefined。现已声明，并改为同步直接调用 ctx.settings.installSection。
+### 说明
+- 额度/限流自动切换能力保持不变，并按 (账号, 模型) 粒度冷却：一个模型被限流不影响该账号其它模型；账号令牌失效会自动刷新重试；全部账号耗尽后才向调用方返回 429。
+## 0.2.0 (2026-09-16)
+本次更新在既有的多账号自动容错池基础上，补齐了每日签到、国内/国际版双区域适配，并把做签到的多账号体验做成了「一个账号一个按钮」的形态。
+### 新增
+- **每日签到**：设置卡片在每个账号的积分区下方新增签到区块，显示当前连签天数、每日可领积分与里程碑额外奖励，并提供一键领取按钮。
+  - 多账号**逐个领取**：池里每个账号各有一个签到按钮，可一次领完所有账号的当日奖励，**不需要先把池的优先账号切过去**。
+  - **不会重复领取**：领取前会先重新查询该账号的签到状态；今日已领取的账号直接返回「今日已签到」，不会再打一次领取接口。按钮在已领取 / 未开通签到活动时自动置灰。
+  - **失败不拖垮卡片**：某个账号的签到查询失败时，只在该账号下显示一行错误提示，其余账号与整个池状态照常渲染。
+  - 新增 CLI 子命令 `checkin`：不带参数查询所有账号今日签到状态，`checkin all` 领取全部账号奖励，`checkin <账号标签>` 只领指定账号；支持 `--json` 输出机器可读结果。
+- **国内版 / 国际版自动适配**：按每个账号凭据里的登录域名自动选择上游域名——国际版登录（`workbuddy.ai`）走 `www.workbuddy.ai`，国内版（默认）走 `copilot.tencent.com` 与 `www.codebuddy.cn`。同一池内可以混用两种区域的账号，各自请求各自区域的接口，账号切换与自动容错轮换对两种区域一并生效。
+- **签到按钮的连签奖励提示**：到达连签里程碑时，签到区块额外显示里程碑天数与额外奖励积分。
+### 安全
+- 签到是本插件唯一的写操作，按四重守卫保护：仅接受 `POST`、仅接受回环（same-origin）来源、请求必须显式携带目标 `accountId`（缺失返回 400、未知账号返回 404），且在领取前二次确认当日状态。请求体读取带 64 KB 上限，避免超大/挂起请求占用宿主内存。
+- 签到状态进入卡片文档前同样经过脱敏处理，令牌类文本不会外泄到浏览器。
+### 修复
+- 修正测试中两处已过期的断言：一是 provider 名（`workbuddy-pool` → `xdpool`）；二是限流断言仍按「账号级冷却」校验，与现有的**按 (账号, 模型) 粒度冷却**语义不符——现按 `modelCooldowns` 校验，并断言账号级冷却未被误置。这两处修正让多账号自动容错的回归测试重新可用（测试总数 17 → 26）。
+### 安装体验
+- **已发布到 npm**：`dsh-xdpool` 现可从 npm 安装，安装只需约 10 秒、仅拉取插件自身一个包（依赖已全部标记为 optional，见下条）。推荐用 `dsh plugin --profile desktop add dsh-xdpool`。
+- **安装速度优化（约 140 秒 → 数秒）**：把 6 个由 DSH 宿主进程提供的运行时包（`@deepseek-ai/dsh-llm`、`dsh-llm-pi-ai`、`dsh-settings`、`cordis`、`schemastery`、`@earendil-works/pi-ai`）在 `peerDependenciesMeta` 中标记为 **optional**。插件自身从不拉取它们；此前未标记 optional，包管理器会自动解析并安装它们的整棵依赖树（含 AWS / Google / Anthropic / Mistral SDK 等），实测安装 112 个包、耗时约 140 秒 —— 现在只需约 1 个包、数秒完成。
+- **构建产物随仓库提交**：`lib/`（`index.js` + `index.d.ts` + `bin.js` + `client.js`）不再被忽略，直接从 GitHub 安装时**不需要任何安装期脚本**，因此不会再出现 pnpm 的「构建脚本被拦截，请放行后重试」提示，装完即用。
+- 相应地，`prepare` 脚本改为 `prepublishOnly`（发布到 npm 前仍会自动构建），安装路径上不再有脚本触发点。
+- 新增 `lib/index.d.ts` 类型声明（此前 `package.json` 的 `types` 指向该文件但构建未产出）。
+### 说明
+- 保留了原有的额度/限流自动切换能力，并在本次改动后重新做了回归验证：单账号限流时同请求内轮换到下一个健康账号、按 (账号, 模型) 粒度冷却（一个模型限流不影响该账号其它模型）、令牌失效自动刷新重试、全部账号耗尽后才向调用方返回 429。

@@ -194,7 +194,7 @@ export class WorkBuddyEncryptedCredentialError extends Error {
         + ' If the app IS installed, it is simply outside the paths this plugin probes — set '
         + 'WORKBUDDY_APP_EXECUTABLE to its full .exe path (then restart DSH) and the credential will open.'
         + ' Signing in again will not help: the credential itself is intact. '
-        + 'Run `dsh-xdpool doctor` to see which paths were probed — if one of them looks like '
+        + 'Run `heybash-xdpool doctor` to see which paths were probed — if one of them looks like '
         + 'mojibake (e.g. "??" where a Chinese folder name should be), the registry value could not be '
         + 'decoded on this machine; report that line and use the override above in the meantime.',
     )
@@ -1069,7 +1069,7 @@ export class WorkBuddyAccountPool {
         await unlink(entry.path)
         removed.push(entry.path)
       } catch (error: unknown) {
-        this.logger?.warn?.(`dsh-xdpool: could not remove expired snapshot ${entry.path}: ${String(error)}`)
+        this.logger?.warn?.(`heybash-xdpool: could not remove expired snapshot ${entry.path}: ${String(error)}`)
       }
     }
     return removed
@@ -1118,7 +1118,7 @@ export class WorkBuddyAccountPool {
     this.skippedFiles = skipped
     if (skipped.length > 0) {
       this.logger?.warn?.(
-        `dsh-xdpool: ${skipped.length} credential file(s) could not be read; `
+        `heybash-xdpool: ${skipped.length} credential file(s) could not be read; `
         + `${found.length} account(s) still loaded. Reasons: `
         + [...new Set(skipped.map(s => s.reason))].join('; '),
       )
@@ -1149,7 +1149,7 @@ export class WorkBuddyAccountPool {
     if (cleaned.length > 0) {
       this.skippedFiles = skipped.filter(entry => !cleaned.includes(entry.path))
       this.logger?.info?.(
-        `dsh-xdpool: removed ${cleaned.length} expired credential snapshot(s) superseded by a newer sign-in`,
+        `heybash-xdpool: removed ${cleaned.length} expired credential snapshot(s) superseded by a newer sign-in`,
       )
     }
 
@@ -1168,7 +1168,7 @@ export class WorkBuddyAccountPool {
       } catch (error: unknown) {
         // A source that cannot answer is a missing pool, not a broken one: the
         // desktop accounts found above are still valid and still usable.
-        this.logger?.warn?.('dsh-xdpool: could not read channel-pack accounts; desktop accounts only', error)
+        this.logger?.warn?.('heybash-xdpool: could not read channel-pack accounts; desktop accounts only', error)
       }
     }
 
@@ -1302,7 +1302,7 @@ export class WorkBuddyAccountPool {
           : [...this.lastPersistedIds].filter(id => !this.accounts.some(account => account.id === id))
         if (leaving.length > 0) {
           this.logger?.warn?.(
-            `dsh-xdpool: ${String(leaving.length)} account(s) are no longer in the pool after a rescan `
+            `heybash-xdpool: ${String(leaving.length)} account(s) are no longer in the pool after a rescan `
               + `and were removed from the store: ${leaving.join(', ')}. `
               + 'Their credentials are gone unless they are signed in again.',
           )
@@ -1310,7 +1310,7 @@ export class WorkBuddyAccountPool {
         await saveStoredAccounts(this.storePath, this.accounts)
         this.lastPersistedIds = new Set(this.accounts.map(account => account.id))
       } catch (error: unknown) {
-        this.logger?.warn?.('dsh-xdpool: could not persist the account store', error)
+        this.logger?.warn?.('heybash-xdpool: could not persist the account store', error)
       }
     }
     return this.accounts
@@ -2011,7 +2011,7 @@ export class WorkBuddyAccountPool {
     const until = Date.now() + this.credentialDeadCooldownMs
     account.credentialDeadUntilMs = Math.max(account.credentialDeadUntilMs ?? 0, until)
     this.logger?.warn(
-      `dsh-xdpool: ${account.label} sign-in was rejected by the upstream; `
+      `heybash-xdpool: ${account.label} sign-in was rejected by the upstream; `
         + `keeping it out of rotation until ${new Date(until).toISOString()} (sign in again to restore it)`,
     )
   }
@@ -2068,7 +2068,7 @@ export class WorkBuddyAccountPool {
       this.clearCredentialDead(account.id)
       revived.push(account)
       this.logger?.info?.(
-        `dsh-xdpool: ${account.label} answered a probe; back in rotation without waiting out the cooldown`,
+        `heybash-xdpool: ${account.label} answered a probe; back in rotation without waiting out the cooldown`,
       )
     }
     return revived
@@ -2103,7 +2103,7 @@ export class WorkBuddyAccountPool {
       if (credential.refreshToken === '') {
         // Nothing to refresh with; only worth failing if already expired.
         if (credential.expiresAtMs > Date.now() + 30_000) return true
-        this.logger?.warn(`dsh-xdpool: ${account.label} token expired with no refresh token; sign in again`)
+        this.logger?.warn(`heybash-xdpool: ${account.label} token expired with no refresh token; sign in again`)
         this.penalizeCredentialDead(account.id)
         return false
       }
@@ -2121,7 +2121,7 @@ export class WorkBuddyAccountPool {
         // A working refresh is the strongest possible proof the sign-in is
         // alive again — undo any earlier dead mark.
         this.clearCredentialDead(account.id)
-        this.logger?.info?.(`dsh-xdpool: refreshed token for ${account.label}`)
+        this.logger?.info?.(`heybash-xdpool: refreshed token for ${account.label}`)
         return true
       } catch (error: unknown) {
         if (isCredentialDeadError(error)) {
@@ -2131,15 +2131,15 @@ export class WorkBuddyAccountPool {
           // so mark the account dead instead of retrying it forever.
           this.penalizeCredentialDead(account.id)
           this.logger?.warn?.(
-            `dsh-xdpool: ${account.label} refresh token was revoked upstream; sign in again to restore it`,
+            `heybash-xdpool: ${account.label} refresh token was revoked upstream; sign in again to restore it`,
             error,
           )
           return false
         }
         if (credential.expiresAtMs > Date.now() + 30_000) {
-          this.logger?.warn?.(`dsh-xdpool: token refresh failed but token still valid for ${account.label}`, error)
+          this.logger?.warn?.(`heybash-xdpool: token refresh failed but token still valid for ${account.label}`, error)
         } else {
-          this.logger?.error?.(`dsh-xdpool: token refresh failed and token expired for ${account.label}`, error)
+          this.logger?.error?.(`heybash-xdpool: token refresh failed and token expired for ${account.label}`, error)
         }
         return true
       }
@@ -2166,7 +2166,7 @@ export class WorkBuddyAccountPool {
     this.logger?.warn(
       
 `
-dsh-xdpool: account credits exhausted; cooling the whole account until 
+heybash-xdpool: account credits exhausted; cooling the whole account until
 `
  +
         
@@ -2193,14 +2193,14 @@ ${new Date(until).toISOString()}
     if (modelId !== undefined && modelId !== '') {
       account.modelCooldowns[modelId] = Math.max(account.modelCooldowns[modelId] ?? 0, until)
       this.logger?.warn(
-        `dsh-xdpool: ${account.label} rate-limited on model ${modelId}; ` +
+        `heybash-xdpool: ${account.label} rate-limited on model ${modelId}; ` +
           `cooling that model until ${new Date(until).toISOString()}`,
       )
       return
     }
     account.cooldownUntilMs = Math.max(account.cooldownUntilMs, until)
     this.logger?.warn(
-      `dsh-xdpool: account ${account.label} rate-limited; cooling until ${new Date(until).toISOString()}`,
+      `heybash-xdpool: account ${account.label} rate-limited; cooling until ${new Date(until).toISOString()}`,
     )
   }
 

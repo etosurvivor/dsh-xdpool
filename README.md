@@ -1,30 +1,10 @@
-# DSH XD Pool
+# Heybash
 
-<p align="center">
-  <a href="https://www.npmjs.com/package/dsh-xdpool"><img src="https://img.shields.io/npm/v/dsh-xdpool?style=flat-square&label=npm&color=cb3837" alt="npm version"></a>
-  <a href="https://www.npmjs.com/package/dsh-xdpool"><img src="https://img.shields.io/npm/dm/dsh-xdpool?style=flat-square&label=downloads&color=cb3837" alt="npm downloads"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/XDTrees/dsh-xdpool?style=flat-square" alt="MIT license"></a>
-  <a href="https://github.com/XDTrees/dsh-xdpool/stargazers"><img src="https://img.shields.io/github/stars/XDTrees/dsh-xdpool?style=flat-square" alt="GitHub stars"></a>
-</p>
+Heybash-xdpool 使用独立版本号，从 **1.0.0** 开始。
 
-## 先加群
+<p align="center"><img src="assets/heybash-logo.png" width="64" height="64" alt="Heybash Logo"></p>
 
-<p align="center">
-  <img src="assets/community-qr-wechat.jpg" width="240" alt="微信机器人二维码：扫码添加后发送 XD 拉你进群">
-  &nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="assets/community-qr-qq.jpg" width="240" alt="QQ 群二维码：直接扫码加入 XD 交流群">
-  <br>
-  <b>左：微信（机器人）</b> —— 扫码添加机器人后<b>发送「XD」</b>，它才会拉你进群；只扫码不加不发是不会有反应的。<br>
-  <b>右：QQ 群</b> —— 直接扫码即可加入，群号 1103463688。
-  <br>
-  <sub>两个群都在，哪个方便用哪个。二维码失效了在 <a href="https://github.com/XDTrees/dsh-xdpool/issues">issues</a> 说一声会换新。</sub>
-  <br>
-  <sub>卡片右上角「点Star」旁边的「交流群」按钮打开的是同样这两张码 —— 不用回头找 README。</sub>
-</p>
-
-<p align="center">
-  <sub>下载量徽章读的是 npm 上 <code>dsh-xdpool</code> 自己的实时统计，不再是改名前的快照。</sub>
-</p>
+[Heybash 项目](https://github.com/etosurvivor/dsh-xdpool) · [问题反馈](https://github.com/etosurvivor/dsh-xdpool/issues) · [MIT License](./LICENSE)
 
 [English](./README.en.md) | 中文
 
@@ -45,40 +25,10 @@
 
 **另外附送一整套「积分自动化」**：签到、领任务奖励、连登兑换、开猫猫旅行……这些每天都要手动点一遍的活儿，插件在后台替你干完了。
 
-> **和单账号连接插件的区别**：`dsh-workbuddy-connect` 那类插件是「一次一个账号」。XD Pool 把**多账号当默认情况**——不挑号、不手动导入，你在桌面 App 换登过的每个号都被池记下并跨重启保存，对外用一个 `xdpool` provider 分组，池内自动容错。
+> **和单账号连接插件的区别**：`dsh-workbuddy-connect` 那类插件是「一次一个账号」。Heybash 把**多账号当默认情况**——不挑号、不手动导入，你在桌面 App 换登过的每个号都被池记下并跨重启保存，对外用一个 `xdpool` provider 分组，池内自动容错。
 
 > **从旧名升级**：这个插件以前叫 `dsh-workbuddy-xdpool`。改名后**旧数据会自动接过来**（你的 API key、忽略名单、账号 pin 都还在）；唯一需要你动手的是「默认模型」如果指向旧 id，见[从旧版升级](#从旧版升级)。
 
-
-## 先看几张图
-
-**账号池（卡片首页：品牌栏 + 六个页面标签，顶部就是用量）**
-
-![账号池：顶栏显示 XD Pool 与版本号、七个页面标签、用量面板在页面最上方、下方是 WorkBuddy 国内版账号卡与「已接入」状态](assets/account-pool.png)
-
-**扫码登录（十三家支持网页或扫码登录的厂商，登一次就能用它们的免费模型）**
-
-![扫码登录：十三家厂商列表，CodeArts 华为云、WorkBuddy 国内版与国际版各带说明与登录按钮](assets/login-channels.png)
-
-**聚合渠道（把各家的免费额度接进同一个模型池，76 家厂商按分类筛选）**
-
-![聚合渠道：聚合开关、搜索框、全部分类 76 / API Key 60 / 免费 1 / 有免费额度 10 / 本地 3 / 需授权 2 的分类筛选](assets/aggregate-channels.png)
-
-**账号积分详情（池中账号：积分包、连签天数、今日已签、保留积分）**
-
-![账号积分详情：当前使用的账号展开后显示合计积分、连签 16 天、每日 +100 积分、今日已签按钮、CodeBuddy 积分包余额与到期时间，以及保留积分输入框](assets/account-credits.png)
-
-**积分自动化面板**
-
-![积分自动化：总开关、立即运行按钮、每个任务的上次执行时间与当轮具体领取到的任务清单、连登解锁倒计时](assets/automation-panel.png)
-
-**模型选择器（国内版 / 国际版 两个独立分组）**
-
-![模型选择器：国内版与国际版各占一个分组，每个模型名后显示积分倍率与促销标签](assets/model-picker.png)
-
-**国内版 / 国际版 双供应商（各自独立账号、积分与模型，可同时使用）**
-
-![切换国内版与国际版：未登录的一侧给出该区域的登录步骤](assets/region-tabs.png)
 
 ## 功能
 
@@ -131,63 +81,35 @@
 
 ## 安装
 
-前置条件：装好 WorkBuddy 桌面 App 并登录（插件复用它存在本机的登录状态）。多账号 = 在桌面 App 里换着登几次，每次登录都会被自动吸进池里。
+DSH 0.2.0 起，设置面板使用平级标签。安装后从左侧栏 **Heybash** 进入，或按 `Ctrl+Alt+,` 打开设置并选择 **Heybash**。
 
-> 兼容 host `0.1.1-rc.2` 起的整个 0.1.x 系列，以及 `0.2.0-rc.2`。安装设置节时会按 host 能力自动选择 `settings.installSection`（0.1.2-rc.1+）或更早的自由函数写法；卡片在 0.2.0 上作为设置面板里一个**平级标签页**渲染。
-
-> **卡片在哪儿打开**：DSH 设置面板本身。开法是**侧边栏左下角的齿轮**，或者快捷键 `Ctrl+Alt+,`。
-> 面板顶部是平级标签：`通用设置 / 模型 / 内置插件 / Agent 预设 / XD Pool` —— 本插件就是最后那个 **XD Pool**。
-> （0.1.x 时代它叫「设置 → 插件 → DSH WorkBuddy XD Pool」，0.2.0 起改成了平级标签，按老路径找不到。）
-
-**方式一：从 npm 安装（推荐）**
+从 npm 安装 Heybash（推荐）：
 
 ```sh
-# dsh 不在 PATH 时，用 node ~/.dsh/profiles/node_modules/@deepseek-ai/dsh/lib/bin.js 代替 dsh
-dsh plugin --profile desktop add dsh-xdpool
+dsh plugin --profile desktop add heybash-xdpool
 ```
 
-> 推荐 npm：需要拉取的依赖只有插件自己（**约 1 个包，几秒搞定**）。
-> 从 GitHub 源码装会连带装开发依赖（构建器、测试框架等几百个包），慢得多。
+也可在 DSH「插件」页面的安装入口输入 `heybash-xdpool`。已有上游 `dsh-xdpool` 的同事应先停用并卸载旧插件，再安装 Heybash，避免同时加载两个模型池；保留原有数据目录即可复用账号与配置。
 
-**方式二：从 GitHub 源码安装**
-
-```sh
-dsh plugin --profile desktop add github:XDTrees/dsh-xdpool
-```
-
-**方式三：手动注册 bundle**
-
-```sh
-# 1) 先装包（npm 或 GitHub 任选）
-dsh plugin --profile desktop add dsh-xdpool
-
-# 2) 注册 bundle：编辑 ~/.dsh/profiles/desktop/package.json，
-#    在 "dsh" → "profile" → "bundles" 数组末尾加上 "dsh-xdpool"
-
-# 3) 重启 DSH Desktop
-```
-
-**本地构建（开发者）**
+本地开发安装：
 
 ```sh
 pnpm install
-pnpm build              # 产出 lib/index.js + lib/index.d.ts + lib/bin.js + lib/client.js
-pnpm test               # 814 项测试
-pnpm typecheck          # 宿主侧类型检查
-pnpm typecheck:client   # 客户端类型检查
+pnpm build
+pnpm test
+pnpm typecheck
+pnpm typecheck:client
+
+dsh plugin --profile desktop add "file:/你的项目路径/dsh-xdpool-fork"
 ```
 
-> **构建产物已随仓库提交**（`lib/` 不在 gitignore 里），所以从 GitHub 装不需要任何安装期脚本，也不会弹 pnpm 那句「构建脚本被拦截，请放行」。**改了 `src/` 记得重新 `pnpm build` 并把 `lib/` 一起提交**，否则用户拿到的是旧产物。
+改动源码后需重新构建并更新已安装的插件，再完整退出、重新启动 DSH Desktop。构建产物 `lib/` 随仓库维护，源码和产物应同步提交。
 
-> 注意：`pnpm install` 要用 pnpm 11（`npx pnpm@11`），必要时加 `--config.confirmModulesPurge=false --config.minimumReleaseAge=0`——pnpm 11 默认的 `minimumReleaseAge` 供应链年龄策略会拦下刚发布的 rc 包。
-
-装完以后：模型选择器里会出现 **XD Pool（国内版）** 和 **XD Pool（国际版）** 两个分组（另有「聚合渠道」和「XD Pool · 免费模型」按需出现）；打开设置面板（左下角齿轮或 `Ctrl+Alt+,`）切到 **XD Pool** 一栏，能看池健康、各账号的令牌 / 积分 / 签到 / 冷却状态，还有「重新检测账号」「清除所有冷却」按钮和每个账号的签到按钮。
-
-Web / TUI profile 也能用（`--profile web` / `--profile dsh-tui`）。
+模型选择器中的账号池分别显示为 **Heybash（国内版）**、**Heybash（国际版）**，免费模型分组显示为 **Heybash · 免费模型**。
 
 ## 从旧版升级
 
-这个插件以前叫 **`dsh-workbuddy-xdpool`**（显示名 `DSH WorkBuddy XD Pool`）。从 2.1.0 起改名为 **`dsh-xdpool`**。
+这个插件以前叫 **`dsh-workbuddy-xdpool`**。当前 Heybash 维护版的包名为 **`heybash-xdpool`**。
 
 **你的数据不会丢。** 插件自己的目录从 `~/.dsh/.workbuddy-xdpool` 变成了 `~/.dsh/.xdpool`，启动时会**自动把旧目录复制过来**——你填过的第三方 API key、忽略名单、账号 pin、启动日志，都在。旧目录**只复制、不删除**，所以想退回旧版、或者两个版本并存，都还能用。
 
@@ -220,31 +142,31 @@ agent-default-model:
 
 ## 命令行
 
-统一用 `dsh plugin --profile desktop exec dsh-xdpool <子命令>` 调用：
+统一用 `dsh plugin --profile desktop exec heybash-xdpool <子命令>` 调用：
 
 ```sh
-dsh plugin --profile desktop exec dsh-xdpool status    # 池里几个号 / 几个冷却 + shim 状态（--credits 查积分、--json 机器可读、--rates 看倍率）
-dsh plugin --profile desktop exec dsh-xdpool accounts  # 已发现的账号（--json）
-dsh plugin --profile desktop exec dsh-xdpool doctor    # 诊断发现 / 冷却 / 上游连通性
-dsh plugin --profile desktop exec dsh-xdpool reset     # 立刻清掉所有 429 冷却
-dsh plugin --profile desktop exec dsh-xdpool checkin   # 查每个账号今天签到了没（--json 机器可读）
-dsh plugin --profile desktop exec dsh-xdpool checkin all
+dsh plugin --profile desktop exec heybash-xdpool status    # 池里几个号 / 几个冷却 + shim 状态（--credits 查积分、--json 机器可读、--rates 看倍率）
+dsh plugin --profile desktop exec heybash-xdpool accounts  # 已发现的账号（--json）
+dsh plugin --profile desktop exec heybash-xdpool doctor    # 诊断发现 / 冷却 / 上游连通性
+dsh plugin --profile desktop exec heybash-xdpool reset     # 立刻清掉所有 429 冷却
+dsh plugin --profile desktop exec heybash-xdpool checkin   # 查每个账号今天签到了没（--json 机器可读）
+dsh plugin --profile desktop exec heybash-xdpool checkin all
                                                                  # 领掉所有账号今天的签到奖励；也可以只传一个账号标签领单个
-dsh plugin --profile desktop exec dsh-xdpool login     # 教你怎么在桌面再加一个号进池
+dsh plugin --profile desktop exec heybash-xdpool login     # 教你怎么在桌面再加一个号进池
 ```
 
 ## 池里怎么多账号？
 
-桌面 App 同一时间只保留**当前登录账号**的凭据（每次换号都会覆盖同一个文件），所以 XD Pool 自己把账号记下来：你在桌面 App 里换着登几个号，每个号在切走的瞬间就被池收进 `~/.dsh/.xdpool/accounts.json` 持久保存——**重启 DSH 也不会丢**。之后点卡片上的「重新检测账号」，或者直接开始用，池都会带着全部历史账号服务。
+桌面 App 同一时间只保留**当前登录账号**的凭据（每次换号都会覆盖同一个文件），所以 Heybash 自己把账号记下来：你在桌面 App 里换着登几个号，每个号在切走的瞬间就被池收进 `~/.dsh/.xdpool/accounts.json` 持久保存——**重启 DSH 也不会丢**。之后点卡片上的「重新检测账号」，或者直接开始用，池都会带着全部历史账号服务。
 
 如果你想给桌面 App 之外的一次登录做个**显式快照**（比如临时固定某个号做验证），也可以手动导入：
 
 ```sh
 # 在 WorkBuddy 桌面 App 登录账号后（key 自己起名）：
-dsh plugin --profile desktop exec dsh-xdpool import myKey
+dsh plugin --profile desktop exec heybash-xdpool import myKey
 # 查看 / 删除已导入的快照：
-dsh plugin --profile desktop exec dsh-xdpool accounts
-dsh plugin --profile desktop exec dsh-xdpool remove myKey
+dsh plugin --profile desktop exec heybash-xdpool accounts
+dsh plugin --profile desktop exec heybash-xdpool remove myKey
 ```
 
 导入的快照与自动保存的账号存在同一个目录 `~/.dsh/.xdpool/` 下，每次扫描都会被一并收进池——不再是「导入了但没人读」。快照以 key 的 **MD5 前 8 位**命名（key 本身记在文件里），中文、带 `/`、带空格的 key 都安全。长期使用靠 refresh token 自动续期；失效了就回桌面重新登录，再 `import <key> --force` 覆盖。
@@ -286,7 +208,7 @@ xdpool:
 
 ## 已知限制
 
-- **WorkBuddy 主账号的登录仍走桌面 App**：XD Pool 可以为插件自己的十三家扫码登录渠道发起扫码，但 WorkBuddy 本体的 token 由桌面 App 的腾讯 SSO 铸造并和设备绑定，池不会替你登录 WorkBuddy。加号 = 在桌面 App 里登录 / 切换，XD Pool 自动吸收。
+- **WorkBuddy 主账号的登录仍走桌面 App**：Heybash 可以为插件自己的十三家扫码登录渠道发起扫码，但 WorkBuddy 本体的 token 由桌面 App 的腾讯 SSO 铸造并和设备绑定，池不会替你登录 WorkBuddy。加号 = 在桌面 App 里登录 / 切换，Heybash 自动吸收。
 
 - **自动化里有几个任务刻意没做**
   - `Expert_Philanthropy`（公益专家）：需要真捐钱，绕不过去。
@@ -307,6 +229,8 @@ xdpool:
 - 本项目与腾讯、WorkBuddy、DeepSeek 均无关联，未获其授权或认可；文中出现的名称仅用于描述兼容关系，其商标权利归各自所有。
 
 ## 致谢
+
+本项目由 Heybash 维护，基于 XDTrees 的 MIT 开源项目 `dsh-xdpool` 分叉；原始版权声明保留于 LICENSE。
 
 本项目的实现参考了以下已公开的项目，并按其许可证要求保留版权声明。参考方向为**设计思路与既有结论**，代码为独立实现；关键模块在源文件头部注释中也标注了所参考的项目与模式：
 

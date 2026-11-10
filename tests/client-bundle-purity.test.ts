@@ -1,5 +1,25 @@
 import { readFileSync } from 'node:fs'
+import { runInNewContext } from 'node:vm'
 import { describe, expect, it } from 'vitest'
+
+describe('the browser bundle registers under its package name', () => {
+  it('can be found by the host manifest after a package rename', () => {
+    const { name } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+    const registrations = new Map<string, unknown>()
+    runInNewContext(readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8'), {
+      window: {
+        __ModuleLoader__: {
+          load({ id, factory }: { id: string; factory: unknown }) {
+            if (registrations.has(id)) throw new Error(`duplicate factory: ${id}`)
+            registrations.set(id, factory)
+          },
+        },
+      },
+    })
+    expect([...registrations.keys()]).toEqual([name])
+    expect(registrations.get(name)).toBeTypeOf('function')
+  })
+})
 
 /**
  * The client bundle runs in a browser, where `process` does not exist.

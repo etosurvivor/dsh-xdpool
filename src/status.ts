@@ -113,12 +113,12 @@ export async function buildStatus(options: StatusOptions): Promise<WorkBuddyStat
 /** Format the status document for a terminal. */
 export function formatStatus(status: WorkBuddyStatus): string {
   const lines: string[] = []
-  lines.push(`WorkBuddy XD Pool: ${status.accounts.length} account(s), ${status.cooling} cooling`)
+  lines.push(`Heybash: ${status.accounts.length} account(s), ${status.cooling} cooling`)
   lines.push(`Shim: ${status.shim.running ? 'running' : 'stopped'}${status.shim.baseUrl === undefined ? '' : ` at ${status.shim.baseUrl}`}`)
   lines.push('')
   if (status.accounts.length === 0) {
     lines.push('No WorkBuddy credential found. Sign in on the WorkBuddy desktop app,')
-    lines.push('then run: dsh plugin --profile desktop exec dsh-xdpool import <key>')
+    lines.push('then run: dsh plugin --profile desktop exec heybash-xdpool import <key>')
     return lines.join('\n')
   }
   for (const account of status.accounts) {

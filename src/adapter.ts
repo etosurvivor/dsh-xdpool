@@ -58,7 +58,7 @@ export const XDPOOL_FREE_PROVIDER = 'xdpool-free'
  * and a lane that answers 503 for everyone else is worse than no lane at all.
  */
 export const EXTRA_LANE_NAMES = {
-  free: 'XD Pool · 免费模型',
+  free: 'Heybash · 免费模型',
 } as const
 /** The provider id each region registers as. */
 export const POOL_PROVIDER_BY_REGION = {
@@ -68,17 +68,14 @@ export const POOL_PROVIDER_BY_REGION = {
 /**
  * Display name each region registers under, so the picker can group them.
  *
- * "XD Pool" rather than the old "WorkBuddy XD Pool": the picker row is the only
- * place this string surfaces, and the brand the user asked for is XD Pool. The
- * REGION suffix stays because both lanes register real providers under different
- * ids — dropping it would leave two identically-named groups in the dropdown.
+ * The regional suffix distinguishes the two Heybash account pools.
  *
  * Display name only. The provider ids above are what the host matches on when it
  * persists a selection, so renaming a group must never touch them.
  */
 export const POOL_NAME_BY_REGION = {
-  cn: 'XD Pool（国内版）',
-  global: 'XD Pool（国际版）',
+  cn: 'Heybash（国内版）',
+  global: 'Heybash（国际版）',
 } as const
 /** Provider idle ceiling while one stream read is outstanding. */
 export const WORKBUDDY_STREAM_IDLE_TIMEOUT_MS = 300_000
@@ -98,7 +95,7 @@ const INERT_AUTH: { credentials: CredentialStore; authContext: AuthContext } = {
     async read() { return undefined },
     async list() { return [] },
     async modify() {
-      throw new Error('dsh-xdpool: this route has no pi-ai credential lifecycle')
+      throw new Error('heybash-xdpool: this route has no pi-ai credential lifecycle')
     },
     async delete() {},
   },
@@ -341,7 +338,7 @@ function toExtraLaneModel(row: FreeModelRow, baseUrl: string, providerId: string
 export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBuddyAdapter {
   const { shim, catalog } = options
   const providerId = options.providerId ?? XDPOOL_PROVIDER
-  const displayName = options.displayName ?? 'XD Pool'
+  const displayName = options.displayName ?? 'Heybash'
   const aggregateCatalog = isAggregateCatalog(catalog)
   const extraRows = options.extraRows
   const buildModels = (): Model<Api>[] => {
@@ -382,12 +379,12 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
       name: displayName,
       auth: {
         apiKey: {
-          name: 'XD Pool loopback secret',
+          name: 'Heybash loopback secret',
           async resolve({ credential }) {
             const apiKey = credential?.key
             return apiKey === undefined || apiKey.length === 0
               ? undefined
-              : { auth: { apiKey }, source: 'XD Pool' }
+              : { auth: { apiKey }, source: 'Heybash' }
           },
         },
       },

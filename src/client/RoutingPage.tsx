@@ -513,7 +513,7 @@ function ChainRow({
  * inventing a second one here would make the same vendor look like two.
  */
 function ownerName(owner: string, t?: Translate | undefined): string {
-  if (owner === 'workbuddy') return t?.('route.ownerPool') ?? 'XD Pool（WorkBuddy）'
+  if (owner === 'workbuddy') return t?.('route.ownerPool') ?? 'Heybash（WorkBuddy）'
   return owner
 }
 /**

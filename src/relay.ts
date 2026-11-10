@@ -309,11 +309,11 @@ export function createPoolRelay(options: PoolRelayOptions): PoolRelay {
     // 503 says "off" where a 401 would tell the client its key is stale and
     // prompt for one that would not help.
     if (!settings.enabled) {
-      writeJson(res, 503, 'relay_disabled', 'the XD Pool LAN relay is switched off')
+      writeJson(res, 503, 'relay_disabled', 'the Heybash LAN relay is switched off')
       return
     }
     if (!keyMatches(bearerOf(req), settings.key)) {
-      writeJson(res, 401, 'relay_unauthorized', 'a valid XD Pool relay key is required')
+      writeJson(res, 401, 'relay_unauthorized', 'a valid Heybash relay key is required')
       return
     }
     const path = (req.url ?? '').split('?')[0] ?? ''

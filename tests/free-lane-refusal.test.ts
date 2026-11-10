@@ -58,7 +58,7 @@ describe('the free lane explains a refusal instead of guessing', () => {
     expect(hint).toContain('NOT an exhausted quota')
     expect(hint).toContain('waiting will not help')
     // The action the user can actually take.
-    expect(hint).toContain('update dsh-xdpool')
+    expect(hint).toContain('update heybash-xdpool')
   })
 
   it('still mentions the per-conversation budget, because a 403 can be that too', () => {

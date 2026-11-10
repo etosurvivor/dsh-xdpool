@@ -1544,7 +1544,7 @@ export declare class WorkBuddyAccountPool {
 }
 /**
  * Node-free constants and types shared by the Host and browser halves of the
- * XD Pool settings card.
+ * Heybash settings card.
  *
  * Pool's runtime state already lives in `src/status.ts` (`buildStatus` /
  * `WorkBuddyStatus`); this module only carves the cross-domain (Host→browser)
@@ -4344,7 +4344,7 @@ export declare const name = "llm-xdpool";
 /** The model registry required before the provider can register. */
 export declare const inject: string[];
 /**
- * Settings namespace for the XD Pool card. Registering a section here
+ * Settings namespace for the Heybash card. Registering a section here
  * is what makes the provider appear on the Models settings page and causes the
  * Host to mount the plugin's client card under Plugin configuration — exactly
  * the mechanism the single-account connector uses.

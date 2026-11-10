@@ -1,6 +1,6 @@
 /**
  * Node-free constants and types shared by the Host and browser halves of the
- * XD Pool settings card.
+ * Heybash settings card.
  *
  * Pool's runtime state already lives in `src/status.ts` (`buildStatus` /
  * `WorkBuddyStatus`); this module only carves the cross-domain (Host→browser)
@@ -59,7 +59,7 @@ export const POOL_CREDITS_SPEND_PATH = '/plugins/dsh-xdpool/credits/spend'
  *
  * A route rather than a settings write for the reason the ignore list is a file:
  * the CLI has no settings service, so a card-only settings key could be written
- * by the card and never by `dsh-xdpool prefer`. The route owns the
+ * by the card and never by `heybash-xdpool prefer`. The route owns the
  * write, pushes it into the pool immediately so the very next request sees it,
  * and is the one path both halves share.
  */

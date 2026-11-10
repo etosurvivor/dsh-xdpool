@@ -470,12 +470,12 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
         // Only explicit zero on this requested model is sufficient; static
         // fallbacks, stale catalogs, promotional badges and unknown prices are not.
         const price = models.find(model => model.id === modelId)?.creditMultiplier
-        logger?.info?.(`dsh-xdpool: reserve pricing model=${modelId} region=${region ?? 'any'} price=${price ?? 'unknown'} exempt=${!pricingSignal.aborted && price === 0}`)
+        logger?.info?.(`heybash-xdpool: reserve pricing model=${modelId} region=${region ?? 'any'} price=${price ?? 'unknown'} exempt=${!pricingSignal.aborted && price === 0}`)
         if (!pricingSignal.aborted && price === 0) {
           reserveExempt.add(account.id)
         }
       } catch {
-        logger?.info?.(`dsh-xdpool: reserve pricing unavailable model=${modelId} region=${region ?? 'any'} aborted=${pricingSignal.aborted}`)
+        logger?.info?.(`heybash-xdpool: reserve pricing unavailable model=${modelId} region=${region ?? 'any'} aborted=${pricingSignal.aborted}`)
         // Failed pricing retains THIS account's reserve. Others can still work.
       }
     }))
@@ -983,7 +983,7 @@ function withBareModelId(raw: string, modelId: string): string {
           entries.push({ id: row.id, name: row.name, source: row.channel })
         }
       } catch (error: unknown) {
-        logger?.warn?.(`dsh-xdpool: channel listing failed: ${String(error)}`)
+        logger?.warn?.(`heybash-xdpool: channel listing failed: ${String(error)}`)
       }
     }
     return entries
@@ -1096,7 +1096,7 @@ function withBareModelId(raw: string, modelId: string): string {
     const switches: string[] = []
     const noteSwitch = (member: string, kind: string, status: number): void => {
       switches.push(`${member} → ${kind} (${String(status)})`)
-      logger?.warn?.(`dsh-xdpool: chain ${row.id} skipped ${member}: ${kind} (${String(status)}); trying next`)
+      logger?.warn?.(`heybash-xdpool: chain ${row.id} skipped ${member}: ${kind} (${String(status)}); trying next`)
     }
     // The chain path had no conversation identity at all, which meant a combo
     // turn reached the gateway with no session headers and was refused with
@@ -1346,7 +1346,7 @@ function withBareModelId(raw: string, modelId: string): string {
       // that the answer came from the third choice rather than the first.
       if (switches.length > 0) {
         logger?.info?.(
-          `dsh-xdpool: chain ${row.id} served by ${member.modelId} after skipping `
+          `heybash-xdpool: chain ${row.id} served by ${member.modelId} after skipping `
             + `${String(switches.length)}/${String(members.length)}: ${switches.join('; ')}`,
         )
       }
@@ -1420,8 +1420,8 @@ function withBareModelId(raw: string, modelId: string): string {
           403,
           'model_not_shared',
           modelId === undefined
-            ? 'no model was named, and this gateway only serves the models shared on its XD Pool card'
-            : `${modelId} is not shared on this gateway; enable it in XD Pool → Gateway`,
+            ? 'no model was named, and this gateway only serves the models shared on its Heybash card'
+            : `${modelId} is not shared on this gateway; enable it in Heybash → Gateway`,
         )
         return
       }
@@ -1447,7 +1447,7 @@ function withBareModelId(raw: string, modelId: string): string {
         res,
         503,
         'combo_missing',
-        `chain ${modelId} is not available right now; edit or re-enable it in XD Pool → Routing`,
+        `chain ${modelId} is not available right now; edit or re-enable it in Heybash → Routing`,
       )
       return
     }
@@ -1478,8 +1478,8 @@ function withBareModelId(raw: string, modelId: string): string {
         503,
         `${lane}_unavailable`,
         lane === 'free'
-          ? `${modelId as string} is not available right now; the free lane's model listing is refreshed on the XD Pool card`
-          : `${modelId as string} is not available right now; sign in to the co-paid lane on the XD Pool card`,
+          ? `${modelId as string} is not available right now; the free lane's model listing is refreshed on the Heybash card`
+          : `${modelId as string} is not available right now; sign in to the co-paid lane on the Heybash card`,
       )
       return
     }
@@ -1668,13 +1668,13 @@ function withBareModelId(raw: string, modelId: string): string {
           // token. Cool it and spend the rest of the budget elsewhere.
           pool.penalizeCredentialDead(account.id)
           logger?.warn(
-            `dsh-xdpool: ${account.label} still refused after a token refresh `
+            `heybash-xdpool: ${account.label} still refused after a token refresh `
               + `(attempt ${attempt + 1}/${maxAttempts}); rotating`,
           )
           continue
         }
         refreshedThisRequest.add(account.id)
-        logger?.warn(`dsh-xdpool: ${account.label} session dead; refreshing token and retrying`)
+        logger?.warn(`heybash-xdpool: ${account.label} session dead; refreshing token and retrying`)
         const before = account.credential.accessToken
         const recovered = await pool.refreshAccount(account.id, { force: true })
         // A 401 on a token the upstream still hands out refresh credentials for
@@ -1684,7 +1684,7 @@ function withBareModelId(raw: string, modelId: string): string {
         if (!recovered || account.credential.accessToken === before) {
           pool.penalizeCredentialDead(account.id)
           logger?.warn(
-            `dsh-xdpool: ${account.label} sign-in is no longer valid `
+            `heybash-xdpool: ${account.label} sign-in is no longer valid `
               + `(attempt ${attempt + 1}/${maxAttempts}); rotating`,
           )
         }
@@ -1696,7 +1696,7 @@ function withBareModelId(raw: string, modelId: string): string {
       if (result.kind === 'hard_credit') {
         pool.penalizeExhausted(account.id)
         logger?.warn(
-          `dsh-xdpool: ${account.label} has no credits left `
+          `heybash-xdpool: ${account.label} has no credits left `
             + `(attempt ${attempt + 1}/${maxAttempts}); rotating`,
         )
         continue
@@ -1709,7 +1709,7 @@ function withBareModelId(raw: string, modelId: string): string {
       // log instead of requiring a reproduction.
       if (result.kind === 'client') {
         logger?.warn(
-          `dsh-xdpool: ${account.label} rejected the request as invalid `
+          `heybash-xdpool: ${account.label} rejected the request as invalid `
           + `(model ${modelId ?? '(none)'}) — ${requestShape(raw)}; upstream: ${result.message.slice(0, 300)}`,
         )
       }
@@ -1719,7 +1719,7 @@ function withBareModelId(raw: string, modelId: string): string {
       // usable (the upstream explicitly allows switching to another model).
       pool.penalize(account.id, parseRateLimitReset(result.message), modelId)
       logger?.warn(
-        `dsh-xdpool: ${account.label} rate-limited on ${modelId ?? '(no model)'} ` +
+        `heybash-xdpool: ${account.label} rate-limited on ${modelId ?? '(no model)'} ` +
           `(attempt ${attempt + 1}/${maxAttempts}); rotating`,
       )
     }
@@ -1874,7 +1874,7 @@ async function serveSuccessfulStream(
   pool: WorkBuddyAccountPool,
   usage: UsageContext | undefined,
 ): Promise<void> {
-  logger?.info?.(`dsh-xdpool: served by ${account.label}`)
+  logger?.info?.(`heybash-xdpool: served by ${account.label}`)
   // Only now is this account the one actually serving the user: a request
   // that failed over to another account must not mark the tried one as used.
   pool.noteServed(account.id)
@@ -1966,7 +1966,7 @@ async function serveSuccessfulStream(
     if (chunk.includes('[DONE]')) sawDone = true
   })
   body.on('error', (error: unknown) => {
-    logger?.warn('dsh-xdpool: upstream stream failed mid-flight', error)
+    logger?.warn('heybash-xdpool: upstream stream failed mid-flight', error)
     finish(false)
     if (!sawDone && res.writable) res.end('data: [DONE]\n\n')
   })
@@ -2041,7 +2041,7 @@ async function recoverFromContextOverrun(options: RecoverOptions): Promise<Recov
   const fromOverrun = Math.max(512, Math.floor(overrunTokens / 2))
   const budget = Math.min(fromWindow, fromOverrun)
   logger?.warn(
-    `dsh-xdpool: context overrun on ${modelId ?? '(no model)'} `
+    `heybash-xdpool: context overrun on ${modelId ?? '(no model)'} `
       + `(~${overrunTokens} tokens, catalog window ${realWindow ?? 'unknown'}); `
       + `compacting to ~${budget} and retrying once`,
   )
@@ -2119,7 +2119,7 @@ async function recoverFromContextOverrun(options: RecoverOptions): Promise<Recov
     }
     if (result.ok) {
       logger?.info?.(
-        `dsh-xdpool: recovered from context overrun on ${modelId ?? '(no model)'} `
+        `heybash-xdpool: recovered from context overrun on ${modelId ?? '(no model)'} `
           + `(summarised: ${summary === undefined ? 'no' : 'yes'})`,
       )
       return { ok: true, account, result }

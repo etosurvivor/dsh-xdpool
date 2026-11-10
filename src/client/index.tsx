@@ -1,5 +1,5 @@
 /**
- * Browser half: XD Pool health and model directory, mounted as its
+ * Browser half: Heybash health and model directory, mounted as its
  * own page in the Settings panel's left nav.
  *
  * Registration shape (see the NOTE below — the choice of slot and of injected
@@ -47,7 +47,7 @@ import type { XdPoolSettingsKey } from './locales.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
-    /** XD Pool card copy. Namespaced `settings.<XDPOOL_SETTINGS_NS>`. */
+    /** Heybash card copy. Namespaced `settings.<XDPOOL_SETTINGS_NS>`. */
     'settings.xdpool': XdPoolSettingsKey
   }
 
@@ -118,7 +118,7 @@ const XDPOOL_ENTRY_ID = 'llm-xdpool'
 export function apply(ctx: WorkBuddyClientContext): void {
   try {
     const namespace = 'settings.xdpool'
-    ctx.effect(() => ctx.locale.register(namespace, { zh, en }), 'dsh-xdpool: settings copy')
+    ctx.effect(() => ctx.locale.register(namespace, { zh, en }), 'heybash-xdpool: settings copy')
     const t = ctx.locale.bind(namespace) as PoolCardInjected['t']
 
     // Soft service probe. Property access on an undeclared service THROWS
@@ -228,7 +228,7 @@ export function apply(ctx: WorkBuddyClientContext): void {
           : { t, settingsScope },
       }, PoolPage))
     } catch (error: unknown) {
-      console.error('[dsh-xdpool] sidebar entry unavailable (settings page unaffected):', error)
+      console.error('[heybash-xdpool] sidebar entry unavailable (settings page unaffected):', error)
     }
     /**
      * The credit dot beside the model name, in the composer's own row.
@@ -252,12 +252,12 @@ export function apply(ctx: WorkBuddyClientContext): void {
         inject: (): { t?: PoolCardInjected['t'] } => (t === undefined ? {} : { t }),
       }, CreditDot))
     } catch (error: unknown) {
-      console.error('[dsh-xdpool] composer credit dot unavailable (everything else unaffected):', error)
+      console.error('[heybash-xdpool] composer credit dot unavailable (everything else unaffected):', error)
     }
   } catch (error: unknown) {
     // Degrade silently on the page: the pool provider still serves models.
     // Developers see the full cause in the browser console; users see no banner.
-    console.error('[dsh-xdpool] client page failed to load (host provider unaffected):', error)
+    console.error('[heybash-xdpool] client page failed to load (host provider unaffected):', error)
   }
 }
 
@@ -374,7 +374,7 @@ function installNavIcon(ctx: WorkBuddyClientContext, resolveLabel: () => string)
         .map(row => String(row.textContent ?? '').trim())
         .filter(text => text !== '')
       console.warn(
-        '[dsh-xdpool] the settings nav row could not be found, so the icon was not applied. '
+        '[heybash-xdpool] the settings nav row could not be found, so the icon was not applied. '
           + `selector=${JSON.stringify(NAV_ROW_SELECTOR)} expectedLabel=${JSON.stringify(wanted)} `
           + `rowsPresent=${JSON.stringify(present)}. `
           + 'This is cosmetic only — the card itself still works. '
@@ -396,7 +396,7 @@ function installNavIcon(ctx: WorkBuddyClientContext, resolveLabel: () => string)
       for (const row of document.querySelectorAll(`[${NAV_ICON_MARKER}]`)) row.removeAttribute(NAV_ICON_MARKER)
       tag.remove()
     }
-  }, 'dsh-xdpool: settings nav icon')
+  }, 'heybash-xdpool: settings nav icon')
 }
 
 /**

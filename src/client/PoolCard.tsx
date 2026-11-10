@@ -1,5 +1,5 @@
 /**
- * XD Pool card contributed to DSH Plugin configuration.
+ * Heybash card contributed to DSH Plugin configuration.
  *
  * The card body mirrors the LaoDing plugin family used by dingminhua's
  * `dsh-connect-workbuddy`: a small status row (dot + count + Rescan / Clear
@@ -1428,7 +1428,7 @@ export function PoolCard({ t, settingsScope }: PoolCardProps) {
       if (mounted.current) setReserveBusy(undefined)
     }
   }
-  const title = t?.('row.title') ?? 'XD Pool'
+  const title = t?.('row.title') ?? 'Heybash'
   const description = t?.('row.desc') ?? ''
   /**
    * The vendor behind one lane, as the login page describes it.
@@ -1643,8 +1643,8 @@ export function PoolCard({ t, settingsScope }: PoolCardProps) {
                 </div>
                 <p className="dsm-xdpool-usage-note">
                   {sidebarRow
-                    ? (t?.('row.sidebarRowOn') ?? 'XD Pool has its own row in the left sidebar. Turn it off to open the pool from Settings instead.')
-                    : (t?.('row.sidebarRowOff') ?? 'The sidebar row is hidden; the pool still opens from Settings → XD Pool, and models are unaffected.')}
+                    ? (t?.('row.sidebarRowOn') ?? 'Heybash has its own row in the left sidebar. Turn it off to open the pool from Settings instead.')
+                    : (t?.('row.sidebarRowOff') ?? 'The sidebar row is hidden; the pool still opens from Settings → Heybash, and models are unaffected.')}
                 </p>
               </section>
 

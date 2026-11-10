@@ -1,5 +1,5 @@
 /**
- * Same-origin routes backing the XD Pool settings card.
+ * Same-origin routes backing the Heybash settings card.
  *
  * These answer loopback browser requests only and never carry token material
  * (no access/refresh tokens, no uin). Read-only by default — the status route
@@ -1691,5 +1691,5 @@ export function registerPoolStatusRoute(ctx: Context, deps: PoolStatusRouteOptio
       disposeStatus()
       disposeUsage()
     }
-  }, 'dsh-xdpool: Web status route')
+  }, 'heybash-xdpool: Web status route')
 }

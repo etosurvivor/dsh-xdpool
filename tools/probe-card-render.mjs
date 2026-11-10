@@ -1,20 +1,4 @@
-/**
- * Render `PoolShell` and prove the group button opens the code.
- *
- * Why this exists at all: every other client test in this repo asserts on source
- * TEXT, which cannot tell "the button is wired" from "the button renders a
- * handler that does nothing". A prop typo, a hook after an early return, or a
- * component that throws on first render all pass a textual check and fail in the
- * browser — and this button's whole job is to be clicked.
- *
- * No react-dom and no DOM: neither is a dependency here (the host supplies the
- * renderer), and none is needed. `PoolShell` uses exactly four hooks, so this
- * file implements those four against React's own `createElement` output, runs
- * the component, walks the element tree, clicks the group button, and renders
- * again — which is the same sequence React performs on a click.
- *
- * Run: node tools/probe-card-render.mjs
- */
+/** Render the Heybash shell and verify its public header and existing tab action. */
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
@@ -32,8 +16,10 @@ mkdirSync(TMP, { recursive: true })
 const built = spawnSync(process.execPath, [
   join(ROOT, 'node_modules', 'typescript', 'bin', 'tsc'),
   join(ROOT, 'src', 'client', 'shell.tsx'),
+  join(ROOT, 'src', 'client', 'avatar.ts'),
   '--ignoreConfig',
   '--outDir', TMP,
+  '--rootDir', join(ROOT, 'src'),
   '--module', 'es2022',
   '--target', 'es2022',
   '--moduleResolution', 'bundler',
@@ -49,10 +35,10 @@ if (built.status !== 0) {
 }
 // tsc emits with `.js` extensions relative to the source tree; rewrite them so
 // the temp module graph resolves.
-const emitted = readFileSync(join(TMP, 'shell.js'), 'utf8')
-writeFileSync(join(TMP, 'shell.js'), emitted)
+const emitted = readFileSync(join(TMP, 'client', 'shell.js'), 'utf8')
+writeFileSync(join(TMP, 'client', 'shell.js'), emitted)
 
-const { PoolShell } = await import(`file://${join(TMP, 'shell.js').replaceAll('\\', '/')}`)
+const { PoolShell } = await import(`file://${join(TMP, 'client', 'shell.js').replaceAll('\\', '/')}`)
 const { createElement: h } = require_('react')
 
 /**
@@ -94,10 +80,13 @@ const internals = require_('react').__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE
 const dispatcher = internals.ReactCurrentDispatcher
 if (dispatcher === undefined) throw new Error('React has no current dispatcher; cannot drive hooks')
 
+const { POOL_CARD_AVATAR } = await import(`file://${join(TMP, 'client', 'avatar.js')}`)
+let selectedTab
 const base = {
   tabs: [{ id: 'pool', label: 'Account pool' }, { id: 'channels', label: 'Login channels' }],
   active: 'pool',
-  avatar: 'data:image/png;base64,iVBORw0KGgo=',
+  avatar: POOL_CARD_AVATAR,
+  onSelect: id => { selectedTab = id },
   version: '9.9.9',
   children: h('div', null, 'body'),
 }
@@ -138,69 +127,21 @@ function walk(node, out = []) {
 
 const classOf = element => String(element.props?.className ?? '')
 
-let tree = render()
-let all = walk(tree)
-
-const group = all.find(el => classOf(el).includes('dsm-xdpool-group'))
-if (group === undefined) throw new Error('the group button is not in the rendered tree')
-if (group.type !== 'button') throw new Error(`the group control is a <${String(group.type)}>, expected <button>`)
-if (typeof group.props.onClick !== 'function') throw new Error('the group button has no click handler')
-const star = all.find(el => el.type === 'a' && classOf(el).includes('dsm-xdpool-star'))
-if (star === undefined) throw new Error('the star button disappeared')
-if (all.some(el => classOf(el).includes('dsm-xdpool-groupmask'))) {
-  throw new Error('the dialog rendered before it was opened')
+const all = walk(render())
+const project = all.find(el => el.type === 'a' && classOf(el).includes('dsm-xdpool-project'))
+if (project?.props.href !== 'https://github.com/etosurvivor/dsh-xdpool') {
+  throw new Error('the project link must open the Heybash fork')
 }
-console.log('closed: group button + star present, dialog absent')
-
-// Click it, exactly as React would: invoke the handler, then re-render.
-group.props.onClick()
-if (!harness.dirty) throw new Error('clicking the group button scheduled no re-render')
-harness.clear()
-tree = render()
-all = walk(tree)
-
-const panel = all.find(el => classOf(el).includes('dsm-xdpool-groupinline'))
-if (panel === undefined) throw new Error('clicking the group button did not open the panel')
-if (panel.props.role !== 'dialog') throw new Error('the panel does not declare role="dialog"')
-// NOT modal any more: it expands in the flow under the tab strip rather than
-// covering the page, so there is no scrim to trap interaction behind.
-if (panel.props['aria-modal'] === 'true') throw new Error('an in-flow disclosure must not claim to be modal')
-
-// TWO codes now — a WeChat bot and a QQ group — each with its own caption. The
-// probe checks both, because a dialog that renders one image and drops the other
-// is exactly the half-broken state a single-image assertion cannot see.
-const images = all.filter(el => classOf(el).includes('dsm-xdpool-groupqr'))
-if (images.length !== 2) throw new Error(`the dialog should carry two QR images, found ${String(images.length)}`)
-for (const [index, image] of images.entries()) {
-  const label = `QR #${String(index + 1)}`
-  const src = String(image.props.src ?? '')
-  if (!src.startsWith('data:image/png;base64,')) throw new Error(`${label} is not an inline data URI`)
-  if (src.length < 2000) throw new Error(`${label} data URI is suspiciously short`)
-  if (image.props.width !== image.props.height) throw new Error(`${label} is not square`)
-  if (image.props.width !== 220) throw new Error(`${label} is not 220px (got ${String(image.props.width)})`)
-  if (String(image.props.alt ?? '').trim() === '') throw new Error(`${label} has no alt text`)
+if (all.some(el => classOf(el).includes('dsm-xdpool-group') || el.props.role === 'dialog')) {
+  throw new Error('a removed community control is still rendered')
 }
-// And they must be DIFFERENT codes: rendering the same image twice would pass
-// every check above and still leave the QQ group unreachable.
-if (String(images[0].props.src) === String(images[1].props.src)) {
-  throw new Error('both QR images are the same code — the WeChat and QQ codes got crossed')
-}
-const src = String(images[0].props.src ?? '')
-
-const close = all.find(el => typeof el.props?.onClick === 'function'
-  && classOf(el).includes('dsm-xdpool-groupclose'))
-if (close === undefined) throw new Error('the panel has no close control besides Escape')
-console.log(`open: panel rendered, QR ${String(src.length)} chars`)
-
-// Close from the button and confirm it goes away. There is no backdrop any more:
-// the panel sits in the flow, so dismissing it is the button's job (and Escape's).
-close.props.onClick({ stopPropagation() {} })
-harness.clear()
-all = walk(render())
-if (all.some(el => classOf(el).includes('dsm-xdpool-groupinline'))) {
-  throw new Error('the panel did not close')
-}
-console.log('closed again from the close button')
-
+const tab = all.find(el => el.props?.role === 'tab')
+if (typeof tab?.props.onClick !== 'function') throw new Error('the shell tabs are not interactive')
+tab.props.onClick()
+if (selectedTab !== 'pool') throw new Error('the selected tab was not delivered to the parent')
+const logo = all.find(el => el.type === 'img' && classOf(el).includes('dsm-xdpool-avatar'))
+const officialLogo = 'data:image/png;base64,' + readFileSync(join(ROOT, 'assets', 'heybash-logo.png')).toString('base64')
+if (logo?.props.src !== officialLogo) throw new Error('the header does not render the official Heybash logo')
+console.log('Heybash project link present; community controls absent; tabs interactive')
 rmSync(TMP, { recursive: true, force: true })
 console.log('OK')

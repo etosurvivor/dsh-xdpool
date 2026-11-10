@@ -908,52 +908,14 @@ export const SHELL_CSS = `
 .dsm-xdpool-brand-copy{display:flex;flex-direction:column;min-width:0}
 .dsm-xdpool-brand-title{display:flex;align-items:baseline;gap:6px;font-size:14px;line-height:19px;font-weight:700;letter-spacing:-.2px;color:var(--dsw-alias-label-primary,#e8e8ea);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dsm-xdpool-version{font-size:10.5px;line-height:14px;font-weight:500;color:var(--dsw-alias-label-tertiary,#8a90a0);font-variant-numeric:tabular-nums}
-/* The star is pinned to the brand row explicitly. Grid auto-placement would
+/* The project link is pinned to the brand row explicitly. Grid auto-placement would
    put it below the tab strip (the strip comes first in the DOM) and stretch it
    across that row instead of hugging the right edge of the brand row. */
-.dsm-xdpool-star{grid-column:2;grid-row:1;justify-self:end;position:relative;display:inline-flex;gap:7px;align-items:center;padding:7px 15px;border-radius:999px;overflow:hidden;text-decoration:none;white-space:nowrap;font-size:12.5px;line-height:17px;font-weight:650;border:1px solid color-mix(in srgb, var(--dsw-alias-state-business-primary,#5686fe) 55%, transparent);background:linear-gradient(140deg, color-mix(in srgb, var(--dsw-alias-state-business-primary,#5686fe) 16%, transparent), transparent 70%);color:var(--dsw-alias-state-business-primary,#5686fe);transition:transform .18s ease, box-shadow .22s ease, color .22s ease, background .22s ease}
-.dsm-xdpool-star:hover{transform:translateY(-1px);box-shadow:0 0 0 4px color-mix(in srgb, var(--dsw-alias-state-business-primary,#5686fe) 10%, transparent), 0 8px 22px color-mix(in srgb, var(--dsw-alias-state-business-primary,#5686fe) 34%, transparent)}
-.dsm-xdpool-star svg{fill:currentColor;transition:transform .5s cubic-bezier(.34,1.56,.64,1)}
-.dsm-xdpool-star:hover svg{transform:rotate(72deg) scale(1.12)}
-.dsm-xdpool-star:active svg{transform:rotate(72deg) scale(.94)}
-/* The group button, next to the star, sharing the brand row.
-   The nav is a grid of 1fr auto; a second control in the same cell would
-   STACK on top of the star rather than sit beside it (grid items in one cell
-   overlap). So the track list grows to three: brand | star | group, and both
-   buttons are pinned to row 1 on their own columns. Auto-placement alone puts
-   them under the tab strip, because the strip comes first in the DOM. */
-.dsm-xdpool-nav{grid-template-columns:1fr auto auto}
-.dsm-xdpool-star{grid-column:2;grid-row:1}
-.dsm-xdpool-group{grid-column:3;grid-row:1;margin-left:6px;cursor:pointer;font:inherit;font-size:12.5px;line-height:17px;font-weight:650;color:color-mix(in srgb, var(--dsw-alias-state-business-primary,#5686fe) 82%, var(--dsw-alias-label-secondary,#c6c9d0));border-color:color-mix(in srgb, var(--dsw-alias-border-l2,#ffffff1f) 88%, transparent);background:linear-gradient(140deg, color-mix(in srgb, var(--dsw-alias-bg-layer-3,#23252b) 72%, transparent), transparent 70%)}
-.dsm-xdpool-group:hover{transform:translateY(-1px);color:var(--dsw-alias-state-business-primary,#5686fe);box-shadow:0 0 0 4px color-mix(in srgb, var(--dsw-alias-state-business-primary,#5686fe) 9%, transparent), 0 8px 22px rgb(0 0 0 / 22%)}
-/* The pulse is on the icon only, and slow: this button is a door, not a call to
-   action, and a card that nags is a card people mute. */
-.dsm-xdpool-group:hover svg{transform:scale(1.1)}
-.dsm-xdpool-group svg{fill:currentColor;transition:transform .28s cubic-bezier(.34,1.56,.64,1)}
-/* The invite dialog. Positioned against the shell (which is the containing
-   block) so it covers the card and nothing of the host dialog around it. */
-/* The invite, expanded in the flow directly under the tab strip.
-   No overlay and no positioning: it is a disclosure, so it pushes the panels below
-   down by its own height and appears exactly where the 交流群 button sits. Two earlier
-   attempts are worth remembering — absolute measured against the page column (so it
-   landed half-way down the scroll), and fixed centred it as a modal (correct for a
-   modal, but the ask was "show it HERE"). */
-.dsm-xdpool-groupinline{display:flex;justify-content:center}
-.dsm-xdpool-groupcard{display:flex;flex-direction:column;align-items:center;gap:10px;max-width:520px;padding:16px 18px 18px;border-radius:16px;border:1px solid color-mix(in srgb, var(--dsw-alias-border-l2,#ffffff1f) 86%, transparent);background:var(--dsw-alias-bg-layer-2,#1c1e22);box-shadow:0 18px 48px rgb(0 0 0 / 34%), inset 0 1px 0 rgb(255 255 255 / 7%)}
-/* The two codes sit side by side and WRAP to a column before either shrinks:
-   a QR squeezed narrower than its module grid is a QR that stops scanning, so
-   the layout gives up the row rather than the size. */
-.dsm-xdpool-groupcodes{display:flex;flex-wrap:wrap;justify-content:center;gap:14px;width:100%}
-.dsm-xdpool-groupcode{display:flex;flex-direction:column;align-items:center;gap:6px;flex:0 0 auto}
-.dsm-xdpool-groupcode-label{font-size:12px;line-height:16px;font-weight:650;color:var(--dsw-alias-label-primary,#e8e8ea)}
-.dsm-xdpool-groupcode-step{max-width:220px;font-size:11px;line-height:15px;color:var(--dsw-alias-label-tertiary,#8a90a0);text-align:center}
-.dsm-xdpool-groupcardhead{display:flex;align-items:center;gap:10px;width:100%;font-size:13px;line-height:18px;color:var(--dsw-alias-label-primary,#e8e8ea)}
-.dsm-xdpool-groupclose{margin-left:auto;appearance:none;border:none;background:transparent;padding:0 4px;font:inherit;font-size:18px;line-height:18px;color:var(--dsw-alias-label-tertiary,#8a90a0);cursor:pointer;border-radius:8px}
-.dsm-xdpool-groupclose:hover{color:var(--dsw-alias-label-primary,#e8e8ea)}
-/* A white plate under the code, always: a QR inverted onto a dark panel scans
-   on some phones and not others, and there is no way to tell which from here. */
-.dsm-xdpool-groupqr{display:block;width:220px;height:220px;border-radius:12px;background:#fff;padding:6px;object-fit:contain}
-.dsm-xdpool-groupnote{width:100%;margin:0;font-size:11.5px;line-height:17px;color:var(--dsw-alias-label-tertiary,#8a90a0);text-align:center}
+.dsm-xdpool-project{grid-column:2;grid-row:1;justify-self:end;position:relative;display:inline-flex;gap:7px;align-items:center;padding:7px 15px;border-radius:999px;overflow:hidden;text-decoration:none;white-space:nowrap;font-size:12.5px;line-height:17px;font-weight:650;border:1px solid color-mix(in srgb, var(--dsw-alias-state-business-primary,#5686fe) 55%, transparent);background:linear-gradient(140deg, color-mix(in srgb, var(--dsw-alias-state-business-primary,#5686fe) 16%, transparent), transparent 70%);color:var(--dsw-alias-state-business-primary,#5686fe);transition:transform .18s ease, box-shadow .22s ease, color .22s ease, background .22s ease}
+.dsm-xdpool-project:hover{transform:translateY(-1px);box-shadow:0 0 0 4px color-mix(in srgb, var(--dsw-alias-state-business-primary,#5686fe) 10%, transparent), 0 8px 22px color-mix(in srgb, var(--dsw-alias-state-business-primary,#5686fe) 34%, transparent)}
+.dsm-xdpool-project svg{fill:currentColor;transition:transform .5s cubic-bezier(.34,1.56,.64,1)}
+.dsm-xdpool-project:hover svg{transform:rotate(72deg) scale(1.12)}
+.dsm-xdpool-project:active svg{transform:rotate(72deg) scale(.94)}
 .dsm-xdpool-navtabs{grid-column:1/-1;position:relative;display:flex;flex-wrap:wrap;gap:2px;padding:3px;border-radius:13px;border:1px solid color-mix(in srgb, var(--dsw-alias-border-l1,#ffffff14) 80%, transparent);background:color-mix(in srgb, var(--dsw-alias-bg-layer-1,#191a1e) 62%, transparent);box-shadow:inset 0 1px 2px rgb(0 0 0 / 4%)}
 /* A raised surface, not a tinted wash: the glider has to read as "this one is
    sitting on top of the strip" from across the panel, and a wash alone is

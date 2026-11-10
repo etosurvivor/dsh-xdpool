@@ -1,8 +1,8 @@
 {
   "name": "heybash-xdpool",
-  "displayName": "Heybash XD Pool",
-  "description": "Heybash fork of dsh-xdpool: one DSH model pool for every free quota you have, with locally maintained routing-chain and reasoning-effort fixes.",
-  "version": "2.6.5-heybash.1",
+  "displayName": "Heybash",
+  "description": "Heybash model pool for DeepSeek Harness: account rotation, provider aggregation, routing chains, usage insights and a local OpenAI-compatible gateway.",
+  "version": "1.0.0",
   "license": "MIT",
   "author": "Heybash",
   "contributors": [
@@ -135,5 +135,9 @@
     "@deepseek-ai/dsh-credentials": {
       "optional": true
     }
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }

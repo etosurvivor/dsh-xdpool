@@ -1,5 +1,5 @@
 /**
- * Nav glyph for the WorkBuddy XD Pool settings page.
+ * Nav glyph for the Heybash settings page.
  *
  * The host's settings shell draws its own 16px `svg` in every nav row and the
  * `settings.section` registration contract projects only `id` / `order` /

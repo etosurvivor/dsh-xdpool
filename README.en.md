@@ -1,30 +1,10 @@
-# DSH XD Pool
+# Heybash
 
-<p align="center">
-  <a href="https://www.npmjs.com/package/dsh-xdpool"><img src="https://img.shields.io/npm/v/dsh-xdpool?style=flat-square&label=npm&color=cb3837" alt="npm version"></a>
-  <a href="https://www.npmjs.com/package/dsh-xdpool"><img src="https://img.shields.io/npm/dm/dsh-xdpool?style=flat-square&label=downloads&color=cb3837" alt="npm downloads"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/XDTrees/dsh-xdpool?style=flat-square" alt="MIT license"></a>
-  <a href="https://github.com/XDTrees/dsh-xdpool/stargazers"><img src="https://img.shields.io/github/stars/XDTrees/dsh-xdpool?style=flat-square" alt="GitHub stars"></a>
-</p>
+Heybash-xdpool has its own version line, starting at **1.0.0**.
 
-## Join the group
+<p align="center"><img src="assets/heybash-logo.png" width="64" height="64" alt="Heybash Logo"></p>
 
-<p align="center">
-  <img src="assets/community-qr-wechat.jpg" width="240" alt="WeChat bot code: scan to add the bot, then send XD to be pulled into the group">
-  &nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="assets/community-qr-qq.jpg" width="240" alt="QQ group code: scan it to join the XD community group">
-  <br>
-  <b>Left: WeChat (bot)</b> — scanning only adds the bot. <b>Send “XD”</b> and it pulls you into the group; scanning alone does nothing.<br>
-  <b>Right: QQ group</b> — scan and you are in. Group number 1103463688.
-  <br>
-  <sub>Both groups are live; use whichever you prefer. If a code stops working, say so in <a href="https://github.com/XDTrees/dsh-xdpool/issues">issues</a> and it will be refreshed.</sub>
-  <br>
-  <sub>The 交流群 button next to “Star” in the card's top-right corner opens these same two codes — no need to come back to the README.</sub>
-</p>
-
-<p align="center">
-  <sub>The downloads badge reads <code>dsh-xdpool</code>'s own live npm stats now, not the pre-rename snapshot.</sub>
-</p>
+[Heybash project](https://github.com/etosurvivor/dsh-xdpool) · [Report an issue](https://github.com/etosurvivor/dsh-xdpool/issues) · [MIT License](./LICENSE)
 
 English | [中文](./README.md)
 
@@ -45,40 +25,10 @@ Then it grew into six pages. Beyond the account pool: sign in to thirteen vendor
 
 **It also throws in a full points-automation suite**: check-ins, task rewards, streak redemption, the buddy trip — all the chores you'd otherwise click through every day, done in the background.
 
-> **How this differs from the single-account connectors**: plugins like `dsh-workbuddy-connect` handle one account at a time. XD Pool treats **multiple accounts as the normal case** — it doesn't pick favourites or ask you to import anything. Every account you've switched through on the desktop app is remembered across restarts, exposed as a single `xdpool` provider group, with automatic failover inside.
+> **How this differs from the single-account connectors**: plugins like `dsh-workbuddy-connect` handle one account at a time. Heybash treats **multiple accounts as the normal case** — it doesn't pick favourites or ask you to import anything. Every account you've switched through on the desktop app is remembered across restarts, exposed as a single `xdpool` provider group, with automatic failover inside.
 
 > **Upgrading from the old name**: this plugin used to be `dsh-workbuddy-xdpool`. Your data is **carried over automatically** (API keys, ignore list, account pin). The one thing you may need to do by hand is a default model pinned to an old id — see [Upgrading from an older version](#upgrading-from-an-older-version).
 
-
-## Screenshots
-
-**Account pool (the card's home page: brand bar plus seven page tabs, usage right at the top)**
-
-![Account pool: the brand bar shows XD Pool with its version, seven page tabs, the usage panel sits at the very top, and below it the WorkBuddy CN account card with its connected badge](assets/account-pool.png)
-
-**Login channels (thirteen vendors that sign in by web or QR — sign in once and their free models are yours)**
-
-![Login channels: the thirteen-vendor list, with CodeArts Huawei Cloud and WorkBuddy CN/global each carrying their own description and sign-in button](assets/login-channels.png)
-
-**Aggregate channels (every vendor's free quota wired into one model pool, 76 vendors filterable by category)**
-
-![Aggregate channels: the aggregate switch, a search box, and the category filters — all 76 / API key 60 / free 1 / has free quota 10 / local 3 / needs authorization 2](assets/aggregate-channels.png)
-
-**Account credit detail (a pool account: credit packages, streak, today's check-in, the credit reserve)**
-
-![Account credit detail: the active account expanded shows the credit total, a 16-day streak, the daily +100 credits, a checked-in-today button, CodeBuddy package balances with their expiry dates, and the credit-reserve input](assets/account-credits.png)
-
-**The points-automation panel**
-
-![Points automation: the master switch, a Run now button, each job's last run with the tasks it actually collected, and the streak countdown](assets/automation-panel.png)
-
-**Model picker (CN and global as two separate groups)**
-
-![Model picker: the CN and global groups each list their own models with credit multipliers and promo tags](assets/model-picker.png)
-
-**CN / global dual provider (separate accounts, credits and models, usable at the same time)**
-
-![Switching between CN and global; the side that is not signed in shows that region's sign-in steps](assets/region-tabs.png)
 
 ## Features
 
@@ -128,59 +78,35 @@ Measured across four accounts, one pass collected **3300 credits and 135 energy*
 
 ## Install
 
-Prerequisite: the WorkBuddy desktop app installed and signed in (the plugin reuses the sign-in state it stores locally). Multi-account = sign in and out a few times in the desktop app; each sign-in is absorbed into the pool. Built against DSH Desktop host `0.1.2`.
+Since DSH 0.2.0, settings use peer tabs. Open **Heybash** from the sidebar, or press `Ctrl+Alt+,` and choose **Heybash**.
 
-> Compatible with the `0.1.1-rc.2` / `0.1.2` host line: the settings section installs via `settings.installSection` (0.1.2-rc.1+) or the earlier free-function form, whichever the host supports.
-
-**Option A — install from npm (recommended)**
+Install Heybash from npm (recommended):
 
 ```sh
-# if dsh is not on PATH, use node ~/.dsh/profiles/node_modules/@deepseek-ai/dsh/lib/bin.js instead
-dsh plugin --profile desktop add dsh-xdpool
+dsh plugin --profile desktop add heybash-xdpool
 ```
 
-> npm is the fast path: the only dependency pulled in is the plugin itself (**roughly 1 package, a few seconds**).
-> Installing from the GitHub source drags in the dev dependencies (bundler, test runner, hundreds of packages) and is much slower.
+You can also enter `heybash-xdpool` in the DSH plugin installer. If the upstream `dsh-xdpool` is installed, disable and remove it before adding Heybash to avoid loading two pools. Keep the existing data directory to reuse account data and settings.
 
-**Option B — install from the GitHub source**
-
-```sh
-dsh plugin --profile desktop add github:XDTrees/dsh-xdpool
-```
-
-**Option C — register the bundle by hand**
-
-```sh
-# 1) install the package (npm or GitHub)
-dsh plugin --profile desktop add dsh-xdpool
-
-# 2) register the bundle: edit ~/.dsh/profiles/desktop/package.json and append
-#    "dsh-xdpool" to the end of the "dsh" → "profile" → "bundles" array
-
-# 3) restart DSH Desktop
-```
-
-**Building locally (developers)**
+For local development:
 
 ```sh
 pnpm install
-pnpm build              # produces lib/index.js + lib/index.d.ts + lib/bin.js + lib/client.js
-pnpm test               # 138 tests
-pnpm typecheck          # host side
-pnpm typecheck:client   # client side
+pnpm build
+pnpm test
+pnpm typecheck
+pnpm typecheck:client
+
+dsh plugin --profile desktop add "file:/your/project/path/dsh-xdpool-fork"
 ```
 
-> **The build output is committed** (`lib/` is not gitignored), so a GitHub install needs no install-time script and never trips pnpm's "build scripts were blocked" prompt. **After changing `src/`, re-run `pnpm build` and commit `lib/` too** — otherwise users get the old build.
+After editing source, rebuild and update the installed plugin, then fully quit and reopen DSH Desktop. Keep the tracked `lib/` build outputs in sync with source.
 
-> Note: `pnpm install` wants pnpm 11 (`npx pnpm@11`), and may need `--config.confirmModulesPurge=false --config.minimumReleaseAge=0` — pnpm 11's default `minimumReleaseAge` supply-chain policy blocks just-published rc packages.
-
-Once installed: **XD Pool（国内版）** and **XD Pool（国际版）** groups appear in the model picker (plus "聚合渠道" and "XD Pool · 免费模型" when those lanes are configured), and the **XD Pool** settings tab shows pool health, each account's token / credits / check-in / cooldown state, the "Detect accounts again" and "Clear all cooldowns" buttons, and a check-in button per account.
-
-It also works under the Web / TUI profiles (`--profile web` / `--profile dsh-tui`).
+The account pools appear as **Heybash（国内版）** and **Heybash（国际版）**; the optional free-model group is **Heybash · 免费模型**.
 
 ## Upgrading from an older version
 
-This plugin used to be **`dsh-workbuddy-xdpool`** (display name `DSH WorkBuddy XD Pool`). As of 2.1.0 it is **`dsh-xdpool`**.
+This plugin used to be **`dsh-workbuddy-xdpool`** . The Heybash-maintained package is **`heybash-xdpool`**.
 
 **Your data is not lost.** The plugin's own directory moved from `~/.dsh/.workbuddy-xdpool` to `~/.dsh/.xdpool`, and startup **copies the old one across automatically** — the third-party API keys you typed, your ignore list, your account pin, the startup trace. The old directory is **copied, never deleted**, so a rollback or a side-by-side install still works.
 
@@ -213,29 +139,29 @@ Every startup writes this to `~/.dsh/.xdpool/startup.log`, so if you forget, the
 
 ## CLI
 
-All commands run through `dsh plugin --profile desktop exec dsh-xdpool <subcommand>`:
+All commands run through `dsh plugin --profile desktop exec heybash-xdpool <subcommand>`:
 
 ```sh
-dsh plugin --profile desktop exec dsh-xdpool status    # pool accounts/cooldown + shim state (--credits, --json, --rates)
-dsh plugin --profile desktop exec dsh-xdpool accounts  # discovered accounts (--json)
-dsh plugin --profile desktop exec dsh-xdpool doctor    # diagnose discovery/cooldown/upstream
-dsh plugin --profile desktop exec dsh-xdpool reset     # clear all 429 cooldowns now
-dsh plugin --profile desktop exec dsh-xdpool checkin   # today's check-in state per account (--json)
-dsh plugin --profile desktop exec dsh-xdpool checkin all
+dsh plugin --profile desktop exec heybash-xdpool status    # pool accounts/cooldown + shim state (--credits, --json, --rates)
+dsh plugin --profile desktop exec heybash-xdpool accounts  # discovered accounts (--json)
+dsh plugin --profile desktop exec heybash-xdpool doctor    # diagnose discovery/cooldown/upstream
+dsh plugin --profile desktop exec heybash-xdpool reset     # clear all 429 cooldowns now
+dsh plugin --profile desktop exec heybash-xdpool checkin   # today's check-in state per account (--json)
+dsh plugin --profile desktop exec heybash-xdpool checkin all
                                                                  # collect every account's daily reward (or pass one label)
-dsh plugin --profile desktop exec dsh-xdpool login     # guide to adding another desktop account
+dsh plugin --profile desktop exec heybash-xdpool login     # guide to adding another desktop account
 ```
 
 ## How accounts get into the pool
 
-The desktop app keeps only the **currently signed-in** account on disk (each switch overwrites the same file), so XD Pool remembers accounts itself: every time you switch sign-ins in the desktop app, the outgoing account is captured into `~/.dsh/.xdpool/accounts.json` and **survives restarts**. Hit "Detect accounts again" or just start using the pool — every historical account comes back.
+The desktop app keeps only the **currently signed-in** account on disk (each switch overwrites the same file), so Heybash remembers accounts itself: every time you switch sign-ins in the desktop app, the outgoing account is captured into `~/.dsh/.xdpool/accounts.json` and **survives restarts**. Hit "Detect accounts again" or just start using the pool — every historical account comes back.
 
 To snapshot an extra login explicitly (e.g. to pin one account for verification):
 
 ```sh
-dsh plugin --profile desktop exec dsh-xdpool import myKey
-dsh plugin --profile desktop exec dsh-xdpool accounts
-dsh plugin --profile desktop exec dsh-xdpool remove myKey
+dsh plugin --profile desktop exec heybash-xdpool import myKey
+dsh plugin --profile desktop exec heybash-xdpool accounts
+dsh plugin --profile desktop exec heybash-xdpool remove myKey
 ```
 
 Imported snapshots live in the same directory, `~/.dsh/.xdpool/`, and every scan absorbs them into the pool — they are no longer written and never read back. Snapshots are named by the **MD5-8 prefix** of their key (so keys with Chinese, `/`, or spaces are safe). Long-lived use relies on refresh-token auto-renewal; if it lapses, re-sign-in on the desktop and `import <key> --force`.
@@ -273,7 +199,7 @@ xdpool:
 
 ## Known limitations
 
-- **The WorkBuddy sign-in itself still goes through the desktop app**: XD Pool can launch QR sign-in for its own thirteen login channels, but WorkBuddy's own token is minted by the desktop app's Tencent SSO and bound to the device — the pool will not sign you in to WorkBuddy. Adding an account = signing in on the desktop app; XD Pool absorbs it.
+- **The WorkBuddy sign-in itself still goes through the desktop app**: Heybash can launch QR sign-in for its own thirteen login channels, but WorkBuddy's own token is minted by the desktop app's Tencent SSO and bound to the device — the pool will not sign you in to WorkBuddy. Adding an account = signing in on the desktop app; Heybash absorbs it.
 
 - **A few automation tasks are deliberately not implemented**
   - `Expert_Philanthropy` (charity expert): requires a real donation; there is no way around it.
@@ -294,6 +220,8 @@ xdpool:
 - This project is not affiliated with, authorised by, or endorsed by Tencent, WorkBuddy, or DeepSeek. Product names appear only to describe compatibility; trademarks belong to their respective owners.
 
 ## Acknowledgments
+
+Maintained by Heybash, based on XDTrees’ MIT-licensed `dsh-xdpool`; the original copyright notice remains in LICENSE.
 
 This project draws on the following public projects and keeps their copyright notices as their licences require. What was taken is **design approach and established findings**; the code is an independent implementation. The modules that lean on a specific source say so in their file headers:
 

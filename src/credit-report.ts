@@ -304,7 +304,7 @@ export async function backfillUsageFromLedger(
   try {
     parsed = JSON.parse(text)
   } catch {
-    logger?.warn?.('dsh-xdpool: token ledger is not readable JSON; usage starts empty')
+    logger?.warn?.('heybash-xdpool: token ledger is not readable JSON; usage starts empty')
     return 0
   }
   const daysNode = (parsed as { days?: unknown }).days
@@ -350,7 +350,7 @@ export async function backfillUsageFromLedger(
   if (calls.length === 0) return 0
   recorder.reset()
   for (const call of calls) recorder.record(call)
-  logger?.info?.(`dsh-xdpool: restored ${String(calls.length)} usage row(s) for ${today} from the ledger`)
+  logger?.info?.(`heybash-xdpool: restored ${String(calls.length)} usage row(s) for ${today} from the ledger`)
   return calls.length
 }
 

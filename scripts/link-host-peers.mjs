@@ -204,11 +204,11 @@ for (const name of peerNames()) {
 }
 
 if (linked.length > 0) {
-  process.stdout.write(`dsh-xdpool: linked ${String(linked.length)} host dependency(ies)\n`)
+  process.stdout.write(`heybash-xdpool: linked ${String(linked.length)} host dependency(ies)\n`)
   for (const line of linked) process.stdout.write(`  ${line}\n`)
 }
 if (alreadyResolved.length > 0 && linked.length === 0) {
-  process.stdout.write(`dsh-xdpool: all ${String(alreadyResolved.length)} peer dependencies already resolve\n`)
+  process.stdout.write(`heybash-xdpool: all ${String(alreadyResolved.length)} peer dependencies already resolve\n`)
 }
 
 /**
@@ -221,7 +221,7 @@ if (alreadyResolved.length > 0 && linked.length === 0) {
  */
 if (notFound.length > 0) {
   process.stdout.write(
-    `dsh-xdpool: ${String(notFound.length)} peer dependency(ies) not visible from this process:\n`
+    `heybash-xdpool: ${String(notFound.length)} peer dependency(ies) not visible from this process:\n`
     + notFound.map(name => `  ${name}\n`).join('')
     + (IS_SOURCE_CHECKOUT
       ? 'Expected in a source checkout: build and test resolve them from devDependencies.\n'
@@ -234,7 +234,7 @@ if (failed.length > 0) {
   // A link that could not be CREATED is a real problem, but still not fatal: the host may
   // resolve the peer without our help. Worth a warning, not a rollback.
   process.stdout.write(
-    `dsh-xdpool: could not link ${String(failed.length)} dependency(ies):\n`
+    `heybash-xdpool: could not link ${String(failed.length)} dependency(ies):\n`
     + failed.map(name => `  ${name}\n`).join(''),
   )
 }
@@ -251,10 +251,10 @@ if (failed.length > 0) {
  */
 const unresolved = peerNames().filter(name => locate(name) === undefined)
 if (unresolved.length === 0) {
-  process.stdout.write('dsh-xdpool: all peer dependencies resolve; the build should load\n')
+  process.stdout.write('heybash-xdpool: all peer dependencies resolve; the build should load\n')
 } else {
   process.stdout.write(
-    `dsh-xdpool: ${String(unresolved.length)} peer dependency(ies) do not resolve here: `
+    `heybash-xdpool: ${String(unresolved.length)} peer dependency(ies) do not resolve here: `
     + `${unresolved.join(', ')}\n`
     + '  Not treated as an install failure — see the note above.\n',
   )

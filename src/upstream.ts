@@ -806,7 +806,7 @@ async function readEnvelope(response: Response): Promise<Envelope> {
       `${GATEWAY_REJECTION_MESSAGE} This usually means the ` +
       'account is using a stale sign-in the upstream no longer accepts: sign in again in ' +
       'the WorkBuddy desktop app, then pick the account on the plugin card. ' +
-      'Run `dsh-xdpool doctor` to list every credential found.',
+      'Run `heybash-xdpool doctor` to list every credential found.',
     )
   }
   let parsed: unknown
@@ -1677,7 +1677,7 @@ export class WorkBuddyUpstreamClient {
         const wait = this.catalogRetryBackoffMs[attempt]
         if (wait === undefined) break
         this.logger?.warn?.(
-          `dsh-xdpool: model catalog fetch failed (attempt ${attempt + 1}/${attempts}), retrying in ${wait}ms`,
+          `heybash-xdpool: model catalog fetch failed (attempt ${attempt + 1}/${attempts}), retrying in ${wait}ms`,
           error,
         )
         await delay(wait)

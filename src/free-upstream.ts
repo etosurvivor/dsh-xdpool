@@ -798,7 +798,7 @@ function withFreeTierHint(status: number, refusal: string, retryAfterMs: number 
   return new AggregateError(
     base.kind,
     'the free lane refused this client: its request fingerprint no longer matches what opencode.ai accepts, '
-      + 'so this is NOT an exhausted quota and waiting will not help — update dsh-xdpool and try again; '
+      + 'so this is NOT an exhausted quota and waiting will not help — update heybash-xdpool and try again; '
       + 'if it persists, report this message. The shared free quota is also metered per conversation, so one '
       + `retry in a fresh conversation covers the case where only that budget is spent${kept}`,
     status,

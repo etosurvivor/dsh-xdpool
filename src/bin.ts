@@ -1,14 +1,14 @@
 /**
  * Command-line diagnostics and account management.
  *
- *   dsh plugin --profile desktop exec dsh-xdpool <command>
+ *   dsh plugin --profile desktop exec heybash-xdpool <command>
  *
  * The CLI is packaged as a separate entry (`lib/bin.js`) and must stay free of
  * host-injected optional-peer imports: it runs standalone, before any argument
  * is parsed, so a single side-effect import of `@earendil-works/pi-ai` made
  * every command die with ERR_MODULE_NOT_FOUND.
  *
- * @module dsh-xdpool/bin
+ * @module heybash-xdpool/bin
  */
 
 import { createHash } from 'node:crypto'
@@ -63,9 +63,9 @@ function accountDir(): string {
 
 function usage(): string {
   return [
-    'dsh-xdpool — multi-account WorkBuddy provider for DeepSeek Harness',
+    'heybash-xdpool — multi-account WorkBuddy provider for DeepSeek Harness',
     '',
-    'Usage: dsh-xdpool <command> [options]',
+    'Usage: heybash-xdpool <command> [options]',
     '',
     'Commands:',
     '  status              Account pool, credits, and shim state (add --credits, --json, --rates)',
@@ -141,7 +141,7 @@ async function commandStatus(args: string[]): Promise<number> {
     console.log(JSON.stringify(status, null, 2))
   } else {
     console.log(
-      `WorkBuddy XD Pool: ${status.accounts.length} account(s), ${status.cooling} cooling\n` +
+      `Heybash: ${status.accounts.length} account(s), ${status.cooling} cooling\n` +
         status.accounts
           .map(account => {
             const flag = account.cooling ? '⏸ ' : '▶ '
@@ -259,7 +259,7 @@ async function commandDoctor(): Promise<number> {
   const lines: string[] = []
   let healthy = true
 
-  lines.push(`dsh-xdpool doctor`)
+  lines.push(`heybash-xdpool doctor`)
   lines.push(`  platform : ${platform()}`)
   lines.push(`  dsh home : ${dshHome()}`)
   lines.push('')
@@ -366,7 +366,7 @@ async function commandImport(args: string[]): Promise<number> {
   const positional = args.filter(arg => !arg.startsWith('--'))
   const key = positional[0]
   if (key === undefined) {
-    console.error('usage: dsh-xdpool import <key> [--force]')
+    console.error('usage: heybash-xdpool import <key> [--force]')
     return 2
   }
   const force = args.includes('--force')
@@ -417,7 +417,7 @@ async function commandImport(args: string[]): Promise<number> {
 async function commandRemove(args: string[]): Promise<number> {
   const key = args.filter(arg => !arg.startsWith('--'))[0]
   if (key === undefined) {
-    console.error('usage: dsh-xdpool remove <key>')
+    console.error('usage: heybash-xdpool remove <key>')
     return 2
   }
   const target = snapshotPath(key, accountDir())
@@ -444,7 +444,7 @@ async function commandIgnore(args: string[], ignored: boolean): Promise<number> 
   const verb = ignored ? 'ignore' : 'unignore'
   const target = args.filter(arg => !arg.startsWith('--'))[0]
   if (target === undefined) {
-    console.error(`usage: dsh-xdpool ${verb} <account-id|label>`)
+    console.error(`usage: heybash-xdpool ${verb} <account-id|label>`)
     return 2
   }
 
@@ -488,7 +488,7 @@ async function commandIgnore(args: string[], ignored: boolean): Promise<number> 
     `Ignored ${account.label} (${account.id}).\n`
     + '  Its credential is no longer read and it will not rejoin the pool, even if the\n'
     + '  desktop app signs it in again. Undo with: '
-    + `dsh-xdpool unignore ${account.id}`,
+    + `heybash-xdpool unignore ${account.id}`,
   )
   return 0
 }
@@ -526,7 +526,7 @@ async function commandIgnored(args: string[]): Promise<number> {
 async function commandPrefer(args: string[]): Promise<number> {
   const target = args.filter(arg => !arg.startsWith('--'))[0]
   if (target === undefined) {
-    console.error('usage: dsh-xdpool prefer <account-id|label>|none')
+    console.error('usage: heybash-xdpool prefer <account-id|label>|none')
     return 2
   }
   if (target === 'none') {
@@ -557,7 +557,7 @@ async function commandPrefer(args: string[]): Promise<number> {
     `Preferred ${account.label} (${account.id}).\n`
     + '  It is tried first while it stays healthy; when it goes into cooldown, runs out\n'
     + '  of credits, or is signed out, the pool falls back to your distribution setting.\n'
-    + '  This survives restarts. Undo with: dsh-xdpool prefer none',
+    + '  This survives restarts. Undo with: heybash-xdpool prefer none',
   )
   return 0
 }
@@ -567,15 +567,15 @@ async function commandPreferred(): Promise<number> {
   const pinned = await readPreferredId()
   if (pinned === undefined) {
     console.log('No account is preferred; the distribution strategy decides. '
-      + 'Set one with: dsh-xdpool prefer <account-id|label>')
+      + 'Set one with: heybash-xdpool prefer <account-id|label>')
     return 0
   }
   const core = await cliCore()
   const known = core.pool.list().find(account => account.id === pinned)
   console.log(known === undefined
     ? `Preferred account ${pinned} is not in the pool right now (ignored, signed out, or not scanned in). `
-      + 'It is inert until it returns. Clear it with: dsh-xdpool prefer none'
-    : `Preferred ${known.label} (${known.id}). Clear it with: dsh-xdpool prefer none`)
+      + 'It is inert until it returns. Clear it with: heybash-xdpool prefer none'
+    : `Preferred ${known.label} (${known.id}). Clear it with: heybash-xdpool prefer none`)
   return 0
 }
 
@@ -588,7 +588,7 @@ function commandLogin(): number {
       'additional account is captured as a snapshot after you switch login:',
       '',
       '  1. Open the WorkBuddy desktop app and sign in (scan the QR code).',
-      '  2. Run:  dsh plugin --profile desktop exec dsh-xdpool import <key>',
+      '  2. Run:  dsh plugin --profile desktop exec heybash-xdpool import <key>',
       '  3. Sign in with the next account in the desktop app.',
       '  4. Run the import command again with a different <key>.',
       '  5. Restart DSH Desktop; every imported account joins the rotation pool.',

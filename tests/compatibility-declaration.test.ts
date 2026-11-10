@@ -62,14 +62,11 @@ describe('the README points at the entry point that exists', () => {
     // appearing anywhere at all.
     expect(readme).not.toMatch(/插件配置卡片（设置 → 插件/u)
     expect(readme).not.toMatch(/装完以后：[^。]*设置 → 插件/u)
-    // And the explanatory mention must be framed as history, not as guidance.
-    const mention = /（0\.1\.x 时代它叫「设置 → 插件 → DSH WorkBuddy XD Pool」[^）]*）/u.exec(readme)
-    expect(mention, 'the old path may only appear as a historical note').not.toBeNull()
-    expect(mention?.[0]).toContain('找不到')
+
   })
 
   it('names the tab the user will actually see', () => {
-    expect(readme).toContain('XD Pool')
+    expect(readme).toContain('Heybash')
   })
 
   it('says how to OPEN the settings panel', () => {

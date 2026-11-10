@@ -1,6 +1,7 @@
+import { readFileSync } from 'node:fs'
 import { defineConfig } from 'tsdown'
 
-const PLUGIN_ID = 'dsh-xdpool'
+const { name: PLUGIN_ID } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
 
 /**
  * Externalized browser-only packages that the Host supplies at runtime through

@@ -53,9 +53,14 @@
  * @module dsh-xdpool/channel-lane
  */
 
+import { resolveMemberReasoningEffort } from './reasoning.ts'
+
 /** The slice of the host's `llm` service this lane needs. */
 export interface ChannelLaneLlm {
   listModels: (provider: string) => Promise<readonly { id: string; name?: string }[]>
+  resolveModelInfo?: (provider: string, model: string, signal?: AbortSignal) => Promise<{
+    reasoning?: { efforts: readonly { id: string }[] }
+  }>
   stream: (options: Record<string, unknown>) => AsyncIterable<Record<string, unknown>>
 }
 
@@ -126,6 +131,7 @@ export interface ChannelLaneRow {
   channel: string
   modelId: string
   name: string
+  supportedEfforts?: readonly string[]
 }
 
 /** One translated event, so the caller decides how to frame it as SSE. */
@@ -174,11 +180,26 @@ export function createChannelLane(options: {
     const running = inflight.get(channel)
     if (running !== undefined) return running
     const pending = llm.listModels(channel)
-      .then(models => models.map(model => ({
-        id: toId(channel, model.id),
-        channel,
-        modelId: model.id,
-        name: model.name ?? model.id,
+      .then(models => Promise.all(models.map(async model => {
+        let supportedEfforts: readonly string[] | undefined
+        if (llm.resolveModelInfo !== undefined) {
+          try {
+            const info = await llm.resolveModelInfo(channel, model.id)
+            // Binary channels expose an enabled state, represented by the chain's
+            // common High level; graded channels keep their exact named levels.
+            supportedEfforts = [...new Set((info.reasoning?.efforts ?? [])
+              .map(effort => effort.id === 'on' ? 'high' : effort.id))]
+          } catch {
+            // A failed capability lookup is unknown, not a negative capability.
+          }
+        }
+        return {
+          id: toId(channel, model.id),
+          channel,
+          modelId: model.id,
+          name: model.name ?? model.id,
+          ...supportedEfforts === undefined ? {} : { supportedEfforts },
+        }
       })))
       .catch((error: unknown) => {
         // Not signed in, no adapter, or the listing needs a network that is
@@ -337,10 +358,27 @@ async function* runTurn(input: {
     messages: converted.filter(message => message.role !== 'system'),
     signal,
   }
-  if (system.length > 0) options.system = system[0]!.content
+  if (system.length > 0) options.system = system
+    .map(message => message.content.map(block => typeof block.text === 'string' ? block.text : '').join(''))
+    .join('\n\n')
   if (typeof body.max_tokens === 'number') options.maxTokens = body.max_tokens
   if (typeof body.temperature === 'number') options.temperature = body.temperature
-  if (Array.isArray(body.tools) && body.tools.length > 0) options.tools = body.tools
+  if (Array.isArray(body.tools) && body.tools.length > 0) {
+    options.tools = body.tools.map((tool: Record<string, unknown>) => {
+      const fn = tool.function
+      return typeof fn === 'object' && fn !== null ? fn : tool
+    })
+  }
+  if (typeof body.reasoning_effort === 'string' && body.reasoning_effort.trim() !== '') {
+    const requested = body.reasoning_effort.trim()
+    let selected = requested
+    if (llm.resolveModelInfo !== undefined) {
+      const info = await llm.resolveModelInfo(channel, modelId, signal)
+      const efforts = info.reasoning?.efforts.map(effort => effort.id) ?? []
+      selected = resolveMemberReasoningEffort(requested, efforts) ?? ''
+    }
+    if (selected !== '') options.reasoningEffort = selected
+  }
 
   for await (const chunk of llm.stream(options)) {
     const event = toChannelEvent(chunk)

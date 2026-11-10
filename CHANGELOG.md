@@ -1,5 +1,12 @@
 # Heybash
 
+## 1.0.1 — 模型回退与推理档位修复
+
+- CodeArts benefit 模型遇到 APIG.0101 时去掉 benefit 头、重新签名并仅重试一次。
+- 推理路由链提供 Low / High / Max，按每次实际命中的模型转换档位；不支持 Max 时降为 High。只有开关的模型将 Low 映射为关闭，High / Max 映射为开启。
+- 长会话压缩的 CodeArts 请求遇到网络或网关超时，可使用已有同模型路由链回退一次。
+- 侧边栏显示 Heybash-Xdpool，账号池深色按钮改用白色文字。
+
 ## 1.0.0 — Heybash-xdpool 首个独立版本
 
 - 独立版本从 1.0.0 开始；npm 包名 `heybash-xdpool`，通过 DSH 插件安装入口直接安装。

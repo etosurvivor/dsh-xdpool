@@ -75,6 +75,7 @@ import type {
   PoolWebRelayStatus,
 } from './status-paths.ts'
 import { describeError, recordStartupNote } from './diagnostics.ts'
+import { recoverCompactionStream } from './compaction-recovery.ts'
 import { applyLaneSelection, laneSelectionFrom } from './model-switch-bridge.ts'
 import { probeModelConnectivity } from './model-probe.ts'
 /**
@@ -1175,11 +1176,26 @@ function canonicalJson(value: unknown): string {
   // is handed the CN roster: without it a chain pointing at `hy3` would drop
   // that member and advertise only the aggregate half. The CN rows are the
   // ones the CN shim can actually serve, which is where chains are answered.
+  let hostRosterCache: readonly HostModelRow[] = []
   const aggregateCatalog = new AggregateCatalog(
     () => readAggregateSettingsSync(),
     () => core.catalogs.cn.current(),
+    () => hostRosterCache,
   )
   void aggregateCatalog.refresh()
+  ctx.on('llm/stream', (options, next) => recoverCompactionStream(options, next, {
+    target: () => {
+      const matching = aggregateCatalog.comboRows().find(row => row.models.some(model =>
+        model === options.model || model === `${options.provider}:${options.model}` || model === `${options.provider}/${options.model}`,
+      ))
+      if (matching !== undefined) recordStartupNote(`compaction transport retry ${options.provider}/${options.model} -> ${XDPOOL_AGGREGATE_PROVIDER}/${matching.id}`)
+      return matching === undefined ? undefined : { provider: XDPOOL_AGGREGATE_PROVIDER, model: matching.id }
+    },
+    stream: request => ctx.llm.stream(request),
+    recovered: (from, to) => {
+      recordStartupNote(`compaction transport recovery ${from.provider}/${from.model} -> ${to.provider}/${to.model}`)
+    },
+  }), { global: true })
   // The免密 free lane. It owns its own roster behind its own provider id, so it
   // shares neither the pool's cooldown table nor its usage panel.
   //
@@ -1243,7 +1259,6 @@ function canonicalJson(value: unknown): string {
    * The two pool-owned channels are excluded by `channelLane` itself, so the same
    * model cannot appear once as a pool row and again as a channel row.
    */
-  let hostRosterCache: readonly HostModelRow[] = []
   const hostRoster = async (): Promise<readonly HostModelRow[]> => {
     try {
       const rows = await channelLane.rows()
@@ -1252,6 +1267,7 @@ function canonicalJson(value: unknown): string {
         channel: row.channel,
         modelId: row.modelId,
         name: row.name,
+        ...row.supportedEfforts === undefined ? {} : { supportedEfforts: row.supportedEfforts },
       }))
     } catch (error: unknown) {
       // Keep whatever the last successful listing produced. An empty list here
@@ -1499,6 +1515,8 @@ function canonicalJson(value: unknown): string {
     // left the static (shorter) roster in place until DSH was restarted.
     refreshCatalog: async () => {
       const result = await seedCatalog()
+      await hostRoster()
+      await aggregateCatalog.refresh()
       invalidateCatalog()
       return result
     },
@@ -1818,6 +1836,8 @@ function canonicalJson(value: unknown): string {
       // alone could never fix a list that had fallen back to the static table —
       // so the obvious remedy silently did nothing.
       await seedCatalog()
+      await hostRoster()
+      await aggregateCatalog.refresh()
       invalidateCatalog()
       return accounts.length
     },
@@ -2235,6 +2255,8 @@ function canonicalJson(value: unknown): string {
         // global provider the CN model list (and vice versa). A region with no
         // signed-in account keeps its static fallback.
         await seedCatalog()
+        await hostRoster()
+        await aggregateCatalog.refresh()
         invalidateCatalog()
       })().catch((error: unknown) => {
         ctx.logger.warn('heybash-xdpool: account catalog seed failed', error)

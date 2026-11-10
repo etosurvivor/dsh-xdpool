@@ -37,6 +37,7 @@
 import type { AggregateModelRow } from './aggregate.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import { isProviderId, parseProviderModelId } from './providers.ts'
+import { CHAIN_REASONING_EFFORTS } from './reasoning.ts'
 /** Id prefix every combo row advertises under. */
 export const COMBO_PREFIX = 'combo:'
 /** The lane name a combo row belongs to, for display grouping. */
@@ -163,6 +164,8 @@ export interface ComboModelRow {
   contextWindow: number
   maxOutputTokens: number
   supportsImages: boolean
+  /** Chain controls are resolved against each selected member's native ladder. */
+  supportedEfforts?: readonly string[]
   /**
    * Discriminator. Aggregate rows carry `providerId`, pool rows carry neither,
    * and only this shape is `true`.
@@ -195,6 +198,7 @@ export interface ComboMember {
   contextWindow: number
   maxOutputTokens: number
   supportsImages: boolean
+  supportedEfforts?: readonly string[]
 }
 /** Windows assumed when nothing on the chain declares one. */
 export const COMBO_DEFAULT_CONTEXT_WINDOW = 131_072
@@ -349,6 +353,7 @@ export interface HostModelRow {
   channel: string
   modelId: string
   name: string
+  supportedEfforts?: readonly string[]
 }
 /** The catalogs a combo chain is resolved against. */
 export interface ComboSources {
@@ -386,6 +391,7 @@ export function resolveComboMember(modelId: string, sources: ComboSources): Comb
       contextWindow: aggregateRow.contextWindow,
       maxOutputTokens: aggregateRow.maxOutputTokens,
       supportsImages: aggregateRow.supportsImages,
+      ...aggregateRow.supportedEfforts === undefined ? {} : { supportedEfforts: aggregateRow.supportedEfforts },
     }
   }
   /**
@@ -402,10 +408,20 @@ export function resolveComboMember(modelId: string, sources: ComboSources): Comb
    * defaults. That is the honest answer: an unknown window must not be treated as a
    * large one, or the host would size a compaction against a limit nobody promised.
    */
-  const hostRow = sources.host?.find(row => row.id === id)
+  const hostRow = sources.host?.find(row => {
+    if (row.id === id) return true
+    // The editor persisted slash IDs while host listings use a colon. Strip
+    // repeated legacy owner prefixes only against a known host model.
+    let bare = id
+    while (bare.startsWith(`${row.channel}/`) || bare.startsWith(`${row.channel}:`)) {
+      bare = bare.slice(row.channel.length + 1)
+      if (bare === row.modelId) return true
+    }
+    return false
+  })
   if (hostRow !== undefined) {
     return {
-      modelId: id,
+      modelId: hostRow.id,
       aggregate: false,
       host: true,
       channel: hostRow.channel,
@@ -413,6 +429,7 @@ export function resolveComboMember(modelId: string, sources: ComboSources): Comb
       contextWindow: COMBO_DEFAULT_CONTEXT_WINDOW,
       maxOutputTokens: COMBO_DEFAULT_MAX_OUTPUT,
       supportsImages: false,
+      ...hostRow.supportedEfforts === undefined ? {} : { supportedEfforts: hostRow.supportedEfforts },
     }
   }
   const poolRow = sources.pool.find(row => row.id === id)
@@ -424,6 +441,7 @@ export function resolveComboMember(modelId: string, sources: ComboSources): Comb
     contextWindow: poolRow.contextWindow,
     maxOutputTokens: poolRow.maxOutputTokens,
     supportsImages: poolRow.supportsImages,
+    ...poolRow.supportedEfforts === undefined ? {} : { supportedEfforts: poolRow.supportedEfforts },
   }
 }
 /**
@@ -512,6 +530,8 @@ export function buildComboCatalog(
       if (member !== undefined) members.push(member)
     }
     if (members.length === 0) continue
+    const supportsReasoning = members.some(member => member.supportedEfforts?.some(effort => effort !== 'off'))
+    const supportedEfforts = supportsReasoning ? CHAIN_REASONING_EFFORTS : []
     rows.push({
       id,
       name: chain.name,
@@ -529,6 +549,7 @@ export function buildComboCatalog(
       // INTERSECTION: every member must accept images, or the chain does not
       // advertise them — a fallback that cannot read the image is a failed turn.
       supportsImages: members.every(member => member.supportsImages),
+      ...supportedEfforts.length === 0 ? {} : { supportedEfforts },
       combo: true,
     })
   }

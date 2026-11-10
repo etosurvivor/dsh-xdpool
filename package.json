@@ -2,7 +2,7 @@
   "name": "heybash-xdpool",
   "displayName": "Heybash",
   "description": "Heybash model pool for DeepSeek Harness: account rotation, provider aggregation, routing chains, usage insights and a local OpenAI-compatible gateway.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "license": "MIT",
   "author": "Heybash",
   "contributors": [

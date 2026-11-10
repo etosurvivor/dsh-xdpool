@@ -2712,11 +2712,31 @@ interface ComboModelRow {
   contextWindow: number;
   maxOutputTokens: number;
   supportsImages: boolean;
+  /** Chain controls are resolved against each selected member's native ladder. */
+  supportedEfforts?: readonly string[];
   /**
    * Discriminator. Aggregate rows carry `providerId`, pool rows carry neither,
    * and only this shape is `true`.
    */
   combo: true;
+}
+/**
+ * One model served by a 扫码登录 channel, as the route editor sees it.
+ *
+ * These are the channels the vendored pack registers with the HOST (`trae`,
+ * `qoder`, `codebuddy`…). They are in neither catalog above: the pool catalog
+ * describes the WorkBuddy account lanes, and the aggregate catalog describes the
+ * vendors in this plugin's own registry. A chain could not name them at all, which
+ * is why the routing page offered exactly ONE platform — the pool — while the login
+ * page happily showed thirteen.
+ */
+interface HostModelRow {
+  /** `<channel>:<modelId>` — the id the shim already resolves to its fifth lane. */
+  id: string;
+  channel: string;
+  modelId: string;
+  name: string;
+  supportedEfforts?: readonly string[];
 }
 /**
  * The aggregate section as it lives on disk.
@@ -3035,6 +3055,8 @@ interface AggregateModelRow {
   contextWindow: number;
   maxOutputTokens: number;
   supportsImages: boolean;
+  /** Optional declared reasoning ladder; absent means unknown. */
+  supportedEfforts?: readonly string[];
   wire: AggregateWire;
   /** `static` from the registry, `discovered` from a live listing. */
   source: 'static' | 'discovered';
@@ -3043,6 +3065,7 @@ interface AggregateModelRow {
 declare class AggregateCatalog {
   private readonly read;
   private readonly poolRows;
+  private readonly hostRows;
   private rows;
   private chainRows;
   /**
@@ -3051,7 +3074,7 @@ declare class AggregateCatalog {
    *   that names a WorkBuddy model. A chain may mix pool models with aggregate
    *   ones, so without this a perfectly valid chain would lose its pool half.
    */
-  constructor(read: () => AggregateStore | Promise<AggregateStore>, poolRows?: () => readonly WorkBuddyModelInfo[]);
+  constructor(read: () => AggregateStore | Promise<AggregateStore>, poolRows?: () => readonly WorkBuddyModelInfo[], hostRows?: () => readonly HostModelRow[]);
   /**
    * Every row this catalog offers: third-party rows first, then chain rows.
    *
@@ -3081,6 +3104,7 @@ interface ChannelLaneRow {
   channel: string;
   modelId: string;
   name: string;
+  supportedEfforts?: readonly string[];
 }
 /** One translated event, so the caller decides how to frame it as SSE. */
 type ChannelLaneEvent = {

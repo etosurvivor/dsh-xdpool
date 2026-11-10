@@ -150,7 +150,7 @@ function modelInput(info: WorkBuddyModelInfo): ('text' | 'image')[] {
   return info.supportsImages ? ['text', 'image'] : ['text']
 }
 /** Map only levels the catalog advertises; undeclared DSH levels stay off. */
-function thinkingLevelMap(info: WorkBuddyModelInfo): Record<string, string | null> | undefined {
+function thinkingLevelMap(info: { supportedEfforts?: readonly string[] }): Record<string, string | null> | undefined {
   const efforts = info.supportedEfforts
   if (efforts === undefined || efforts.length === 0) return undefined
   const levels = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
@@ -275,6 +275,7 @@ function toAggregateModel(row: AggregateModelRow, baseUrl: string, providerId: s
  * letting the turn run past it.
  */
 function toComboModel(row: ComboModelRow, baseUrl: string, providerId: string): Model<Api> {
+  const map = thinkingLevelMap(row)
   return {
     id: row.id,
     name: row.name,
@@ -285,11 +286,9 @@ function toComboModel(row: ComboModelRow, baseUrl: string, providerId: string): 
     cost: NO_COST,
     contextWindow: row.contextWindow,
     maxTokens: row.maxOutputTokens,
-    // A chain does not advertise reasoning: it cannot know whether the member
-    // that answers understands the parameter, and pi-ai's thinking control maps
-    // onto it one-to-one.
-    reasoning: false,
-    compat: { supportsReasoningEffort: false },
+    reasoning: map !== undefined,
+    ...map === undefined ? {} : { thinkingLevelMap: map },
+    compat: { supportsReasoningEffort: map !== undefined },
   } as unknown as Model<Api>
 }
 /**
@@ -304,11 +303,6 @@ function toComboModel(row: ComboModelRow, baseUrl: string, providerId: string): 
 function toExtraLaneModel(row: FreeModelRow, baseUrl: string, providerId: string): Model<Api> {
   const efforts = 'efforts' in row && Array.isArray(row.efforts) && row.efforts.length > 0 ? row.efforts : undefined
   const map = efforts === undefined ? undefined : thinkingLevelMap({
-    id: row.id,
-    name: row.name,
-    contextWindow: row.contextWindow,
-    maxOutputTokens: row.maxOutput,
-    supportsImages: row.vision,
     supportedEfforts: efforts,
   })
   return {

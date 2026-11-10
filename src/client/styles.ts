@@ -528,8 +528,8 @@ export const POOL_CARD_CSS = `
 .dsm-xdpool-cpool-card .dsm-xdpool-cpool-fold:hover:not(:disabled),.dsm-xdpool-cpool-card .dsm-xdpool-cpool-fold[aria-expanded=true]{border-color:var(--dsw-alias-border-l2,#36373b)}
 .dsm-xdpool-cpool-card .dsm-xdpool-cpool-fold:hover:not(:disabled){background:color-mix(in srgb, var(--dsw-alias-label-primary,#f2f3f5) 7%, transparent)}
 .dsm-xdpool-cpool-card .dsm-xdpool-minibtn:hover:not(:disabled){border-color:var(--dsw-alias-border-l2,#36373b);background:color-mix(in srgb, var(--dsw-alias-label-primary,#f2f3f5) 6%, transparent)}
-.dsm-xdpool-btn[data-tone="primary"]{border-color:transparent;background:color-mix(in srgb, var(--dsw-alias-brand-primary,#5686fe) 82%, #ffffff 4%);color:#0d1014;font-weight:640}
-.dsm-xdpool-btn[data-tone="primary"]:hover:not(:disabled){background:color-mix(in srgb, var(--dsw-alias-brand-primary,#5686fe) 94%, #ffffff 6%);color:#0d1014}
+.dsm-xdpool-btn[data-tone="primary"]{border-color:transparent;background:color-mix(in srgb, var(--dsw-alias-brand-primary,#5686fe) 82%, #ffffff 4%);color:#fff;font-weight:640}
+.dsm-xdpool-btn[data-tone="primary"]:hover:not(:disabled){background:color-mix(in srgb, var(--dsw-alias-brand-primary,#5686fe) 94%, #ffffff 6%);color:#fff}
 .dsm-xdpool-btn[data-tone="quiet"]{border-color:transparent;background:transparent;color:var(--dsw-alias-label-secondary,#c9ccd1);font-weight:500}
 .dsm-xdpool-btn[data-tone="claimed"]{border-color:var(--dsw-alias-border-l2,#36373b);background:transparent;color:var(--dsw-alias-label-tertiary,#9aa0a8);font-weight:600;cursor:default}
 @media (prefers-reduced-motion: reduce){

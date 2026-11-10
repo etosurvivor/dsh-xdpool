@@ -22,6 +22,7 @@ import { parseRateLimitReset, WorkBuddyUpstreamClient, type ChatStreamResult, ty
 import { compactWithSummary, estimateMessagesTokens, hardTruncate, type ChatMessage } from './context-budget.ts'
 import { AggregateError, forwardAggregateStreamed, resolveAggregateProvider, type AggregateCatalog } from './aggregate.ts'
 import { parseProviderModelId } from './providers.ts'
+import { withMemberReasoningEffort } from './reasoning.ts'
 import {
   COMBO_CHANNEL,
   comboChain,
@@ -1066,6 +1067,7 @@ function withBareModelId(raw: string, modelId: string): string {
     const sources = {
       pool: catalog.current(),
       aggregate: aggregate === undefined ? [] : aggregate.catalog.providerRows(),
+      host: channels === undefined ? [] : await channels.rows(),
     }
     const members = comboChain(row)
       .map(modelId => resolveComboMember(modelId, sources))
@@ -1269,7 +1271,10 @@ function withBareModelId(raw: string, modelId: string): string {
         // Region-aware normalisation: a chain member belongs to this shim's
         // region, so the two region-only rules (leading system on global, the
         // `off` effort everywhere) can be applied here.
-        const memberRaw = JSON.stringify({ ...(JSON.parse(raw) as Record<string, unknown>), model: member.modelId })
+        const memberRaw = withMemberReasoningEffort(
+          JSON.stringify({ ...(JSON.parse(raw) as Record<string, unknown>), model: member.modelId }),
+          member.supportedEfforts,
+        )
         const prepared = client.prepareChatBodyFor(memberRaw, region ?? 'cn')
         const result = await client.chatStream(account.credential, prepared, memberSignal, conversationKey)
         if (result.ok) {
@@ -1319,7 +1324,9 @@ function withBareModelId(raw: string, modelId: string): string {
       }
       const frames: string[] = []
       try {
-        await forwardAggregateStreamed(resolved, parsed.modelId, withBareModelId(raw, parsed.modelId), {
+        await forwardAggregateStreamed(resolved, parsed.modelId, withMemberReasoningEffort(
+          withBareModelId(raw, parsed.modelId), member.supportedEfforts,
+        ), {
           signal: memberSignal,
           onData: payload => frames.push(payload),
           // A chain member on the aggregate side is still a physical call to a

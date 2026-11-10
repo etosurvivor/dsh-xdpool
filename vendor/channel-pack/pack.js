@@ -32689,6 +32689,10 @@ var CHAT_API_BASE = "https://snap-access.cn-north-4.myhuaweicloud.com/api/v2";
 var PROVIDER = "codearts";
 var BENEFIT_NOT_FOUND_CODE = "BENEFIT_NOT_FOUND";
 var CODEARTS_BENEFIT_NOT_FOUND_ERROR_CODE = "InferHub.4004.200";
+// [patch:codearts-benefit-apig] benefit 通道被拒（APIG.0101 / 404）≠ 凭据或模型无效：
+// 同凭据对照实测，去掉 maas_type: benefit 头即恢复 200。单独一个错误码，
+// 供调用侧只对该情形做一次有限回退（不重复循环）。
+var BENEFIT_HEADER_REJECTED_CODE = "BENEFIT_HEADER_REJECTED";
 var DEFAULT_MODELS = [
   "GLM-5.2",
   "GLM-5.1",
@@ -33472,7 +33476,8 @@ var CodeArtsAdapter = class extends LlmAdapter {
             throw new LlmError2(message2, QUOTA_EXCEEDED_CODE, { status: 200 });
           }
           if (error instanceof SseQueueRetryError) {
-          } else if (error instanceof LlmError2 && error.code === BENEFIT_NOT_FOUND_CODE && isBenefitModel && !benefitHeaderDropped) {
+          } else if (error instanceof LlmError2 && (error.code === BENEFIT_NOT_FOUND_CODE || error.code === BENEFIT_HEADER_REJECTED_CODE) && isBenefitModel && !benefitHeaderDropped) {
+            // [patch:codearts-benefit-apig] One header-free retry, shared with the existing benefit fallback.
             benefitHeaderDropped = true;
             continue;
           } else {
@@ -33481,6 +33486,12 @@ var CodeArtsAdapter = class extends LlmAdapter {
         }
       } else {
         const errorText = await response.text().catch(() => "");
+        // [patch:codearts-benefit-apig] benefit 通道被拒：404 或 APIG.0101 —— 去掉 maas_type 重签重试一次；
+        // benefitHeaderDropped 置位后不会再走这里，失败即按普通错误抛出，不会循环。
+        if (isBenefitModel && !benefitHeaderDropped && (response.status === 404 || errorText.includes("APIG.0101"))) {
+          benefitHeaderDropped = true;
+          continue;
+        }
         if (isAuthError(response.status, errorText) && !authRefreshed) {
           authRefreshed = true;
           // [xdpool-local] auth failure rotates the account, not just refresh it.
@@ -33730,6 +33741,11 @@ var CodeArtsAdapter = class extends LlmAdapter {
             }
             if (data.error_code === CODEARTS_BENEFIT_NOT_FOUND_ERROR_CODE) {
               throw new LlmError2(`codearts: ${message2}`, BENEFIT_NOT_FOUND_CODE, { status: 200 });
+            }
+            // [patch:codearts-benefit-apig] 同样的问题也可能以 200 + SSE error frame 出现，
+            // 且插件的报错只带 error_msg，丢了 error_code（本机 10:06 即此路径）。
+            if (data.error_code.includes("APIG.0101") || message2.includes("APIG.0101")) {
+              throw new LlmError2(`codearts: ${data.error_code} ${message2}`, BENEFIT_HEADER_REJECTED_CODE, { status: 200 });
             }
             throw new LlmError2(`codearts: ${message2}`, "INVALID_REQUEST", { status: 200 });
           }

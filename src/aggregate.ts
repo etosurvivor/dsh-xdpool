@@ -46,6 +46,7 @@ import {
   buildComboCatalog,
   pruneRotation,
   type ComboModelRow,
+  type HostModelRow,
 } from './combos.ts'
 import type { WorkBuddyCatalog, WorkBuddyModelInfo } from './catalog.ts'
 /** Registry `format` → the wire vocabulary this module speaks. */
@@ -303,6 +304,8 @@ export interface AggregateModelRow {
   contextWindow: number
   maxOutputTokens: number
   supportsImages: boolean
+  /** Optional declared reasoning ladder; absent means unknown. */
+  supportedEfforts?: readonly string[]
   wire: AggregateWire
   /** `static` from the registry, `discovered` from a live listing. */
   source: 'static' | 'discovered'
@@ -427,6 +430,7 @@ export class AggregateCatalog {
   constructor(
     private readonly read: () => AggregateStore | Promise<AggregateStore>,
     private readonly poolRows: () => readonly WorkBuddyModelInfo[] = () => [],
+    private readonly hostRows: () => readonly HostModelRow[] = () => [],
   ) {}
   /**
    * Every row this catalog offers: third-party rows first, then chain rows.
@@ -452,12 +456,12 @@ export class AggregateCatalog {
     const chains = buildComboCatalog(combosOf(store), {
       pool: this.poolRows(),
       aggregate: next,
+      host: this.hostRows(),
     })
     pruneRotation(combosOf(store))
-    const same = next.length === this.rows.length
-      && chains.length === this.chainRows.length
-      && next.every((row, index) => row.id === this.rows[index]?.id)
-      && chains.every((row, index) => row.id === this.chainRows[index]?.id)
+    // A live catalog can add reasoning levels without changing any model IDs.
+    const same = JSON.stringify(next) === JSON.stringify(this.rows)
+      && JSON.stringify(chains) === JSON.stringify(this.chainRows)
     if (same) return this.current()
     this.rows = next
     this.chainRows = chains

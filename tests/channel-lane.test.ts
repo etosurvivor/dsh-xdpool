@@ -269,7 +269,7 @@ describe('the gateway serving a channel', () => {
     for (const message of call.options.messages) {
       expect(Array.isArray(message.content)).toBe(true)
     }
-    expect(call.options.system).toEqual([{ type: 'text', text: 'be brief' }])
+    expect(call.options.system).toBe('be brief')
   })
 
   it('honours stream:false, unlike the pool lane which always streams', async () => {

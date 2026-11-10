@@ -8,7 +8,7 @@
 export const en = {
   // The Settings nav row. Short by design: the nav column is narrow and the
   // card body already carries the full product name.
-  'row.navLabel': 'Heybash',
+  'row.navLabel': 'Heybash-Xdpool',
   'row.title': 'Account pool',
   'row.desc': '',
   'row.expand': 'Expand',
@@ -121,8 +121,8 @@ export const en = {
   'row.modelsDiscard': 'Discard',
   'row.modelsSaved': 'Model selection saved',
   'row.sidebarRowTitle': 'Sidebar entry',
-  'row.sidebarRowOn': 'Heybash has its own row in the left sidebar. Turn it off to open the pool from Settings instead.',
-  'row.sidebarRowOff': 'The sidebar row is hidden; the pool still opens from Settings → Heybash, and models are unaffected.',
+  'row.sidebarRowOn': 'Heybash-Xdpool has its own row in the left sidebar. Turn it off to open the pool from Settings instead.',
+  'row.sidebarRowOff': 'The sidebar row is hidden; the pool still opens from Settings → Heybash-Xdpool, and models are unaffected.',
   'row.modelsConflict': 'The settings changed elsewhere; review and save again',
   'row.modelsSaveError': 'Could not save: {message}',
   'row.modelsEmpty': 'No model enabled — enable at least one before saving.',
@@ -604,7 +604,7 @@ export const en = {
 } as const
 export type XdPoolSettingsKey = keyof typeof en
 export const zh: Record<XdPoolSettingsKey, string> = {
-  'row.navLabel': 'Heybash',
+  'row.navLabel': 'Heybash-Xdpool',
   'row.title': '账号池',
   'row.desc': '',
   'row.expand': '展开',
@@ -716,8 +716,8 @@ export const zh: Record<XdPoolSettingsKey, string> = {
   'row.modelsDiscard': '放弃修改',
   'row.modelsSaved': '模型选择已保存',
   'row.sidebarRowTitle': '侧栏入口',
-  'row.sidebarRowOn': '左侧栏会给 Heybash 留一行入口。关掉后改为从「设置 → Heybash」进入，模型池不受影响。',
-  'row.sidebarRowOff': '侧栏入口已隐藏；仍可从「设置 → Heybash」进入，模型池不受影响。',
+  'row.sidebarRowOn': '左侧栏会给 Heybash-Xdpool 留一行入口。关掉后改为从「设置 → Heybash-Xdpool」进入，模型池不受影响。',
+  'row.sidebarRowOff': '侧栏入口已隐藏；仍可从「设置 → Heybash-Xdpool」进入，模型池不受影响。',
   'row.modelsConflict': '设置已在别处被修改，请确认后重新保存',
   'row.modelsSaveError': '保存失败：{message}',
   'row.modelsEmpty': '至少要启用一个模型才能保存。',

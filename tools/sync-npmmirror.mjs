@@ -16,7 +16,6 @@ async function request(fetchImpl, url, init = {}) {
   const response = await fetchImpl(url, {
     ...init,
     signal: AbortSignal.timeout(15_000),
-    headers: { 'cache-control': 'no-cache', ...init.headers },
   })
   if (!response.ok) throw new Error(`${init.method ?? 'GET'} ${new URL(url).hostname}: HTTP ${response.status}`)
   return response

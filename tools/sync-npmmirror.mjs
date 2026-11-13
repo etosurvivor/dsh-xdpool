@@ -41,7 +41,7 @@ async function retry(label, action, { attempts, intervalMs, sleep, log }) {
  */
 export async function syncMirror({
   version, fetchImpl = fetch, sleep = delay, log = console.log,
-  attempts = 24, intervalMs = 10_000, syncAttempts = 3,
+  attempts = 24, officialAttempts = attempts * 2, intervalMs = 10_000, syncAttempts = 3,
 } = {}) {
   if (version !== undefined && !VERSION.test(version)) throw new Error('Invalid target version')
   const options = { attempts, intervalMs, sleep, log }
@@ -57,7 +57,7 @@ export async function syncMirror({
     const checksum = data.versions?.[target]?.dist?.shasum
     if (typeof checksum !== 'string' || !/^[a-f0-9]{40}$/u.test(checksum)) throw new Error(`npm ${target} is not yet available with a checksum`)
     return { target, checksum, latest: data['dist-tags']?.latest }
-  }, options)
+  }, { ...options, attempts: officialAttempts })
   log(`npm target ${official.target}; latest ${official.latest}`)
 
   const verify = async (download = false) => {

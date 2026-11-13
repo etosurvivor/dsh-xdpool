@@ -39,6 +39,17 @@ describe('npm mirror synchronization', () => {
     expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1)
   })
 
+  it('allows npm publication to take longer than the mirror retry window', async () => {
+    let officialReads = 0
+    const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes('registry.npmjs.org')) return ++officialReads < 5 ? json({}, 404) : json(doc())
+      if (init?.method === 'HEAD') return new Response(null, { status: 200 })
+      return json(doc())
+    })
+    await expect(syncMirror({ ...options, version: '1.0.3', fetchImpl: fetcher })).resolves.toEqual({ version: '1.0.3', synced: false })
+    expect(officialReads).toBe(5)
+  })
+
   it('retries failed mirror tasks and reports failure rather than false success', async () => {
     const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
       if (url.includes('registry.npmjs.org')) return json(doc())

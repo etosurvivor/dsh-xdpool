@@ -11,6 +11,7 @@ const { name: PLUGIN_ID } = JSON.parse(readFileSync(new URL('./package.json', im
 const CLIENT_EXTERNALS = [
   'react',
   'react/jsx-runtime',
+  'react-dom',
   '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-client-runtime/client',
   '@deepseek-ai/dsh-client-ui-slots',

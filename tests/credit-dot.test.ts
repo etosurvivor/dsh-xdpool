@@ -117,8 +117,9 @@ describe('the credit dot', () => {
     // The composer sits at the bottom of the viewport, so a panel opened downward would
     // be clipped; the height is consulted and it flips when there is no room above.
     expect(dot).toContain('getBoundingClientRect()')
-    expect(dot).toContain('panelRef.current?.offsetHeight')
-    expect(dot).toContain('above >= margin')
+    expect(dot).toContain('creditPanelPosition(box, panelBox')
+    expect(dot).toContain('createPortal(')
+    expect(dot).toContain('document.body')
   })
 
   it('separates accounts by credential origin', () => {

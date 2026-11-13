@@ -28,14 +28,14 @@
  *
  * POSITIONING AND DISMISSAL ARE DONE HERE
  *
- * The host's own floating primitive is internal to its packages, so this uses a fixed
- * anchor measured from the button plus a document-level listener for outside clicks and
- * Escape. That is the same contract the host's meters use, implemented locally rather
- * than depending on a module this bundle cannot import.
+ * The panel is portaled to the document body so transformed or clipping composer
+ * ancestors cannot change the coordinate system of its fixed position.
  *
  * @module dsh-xdpool/client/CreditDot
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from 'react'
+import { createPortal } from 'react-dom'
+import { creditPanelPosition } from './credit-position.ts'
 import { POOL_CREDITS_SPEND_PATH, POOL_STATUS_PATH } from '../status-paths.ts'
 import { POOL_NAV_ICON_MASK_URL } from './nav-icon.ts'
 import { CREDIT_DOT_CSS } from './styles.ts'
@@ -326,69 +326,37 @@ export function CreditDot({ t }: { readonly t?: Translate | undefined }): ReactE
     return () => { observer.disconnect() }
   }, [])
 
-  /**
-   * Place the panel above the dot.
-   *
-   * Measured rather than CSS-anchored because the composer row can be at the bottom of
-   * the viewport, and a panel that opens downward would be clipped by it. `side: top`
-   * with a viewport clamp is the same rule the host's own meters follow.
-   */
+  /** Keep body-relative panel and viewport-relative anchor in the same coordinate space. */
   useLayoutEffect(() => {
     if (!open) { setPos(undefined); return }
     const anchor = anchorRef.current
-    if (anchor === null) return
-    const box = anchor.getBoundingClientRect()
-    /**
-     * The panel sizes to its content (`width: max-content`), so its width can only be
-     * read AFTER it has rendered. A hard-coded number here was what made a short line of
-     * text sit in a 300px box: the width came from this layout maths rather than from
-     * what the text needed. Measuring the element keeps the two in step.
-     *
-     * Falling back to 200 when the ref is not attached yet (first frame) is safe: the
-     * effect re-runs on `open`, and the panel is `visibility: hidden` until `pos` exists.
-     */
-    const width = panelRef.current?.offsetWidth ?? 200
-    const margin = 8
-    const left = Math.min(
-      Math.max(margin, box.left + box.width / 2 - width / 2),
-      Math.max(margin, window.innerWidth - width - margin),
-    )
-    // Above the dot by default; if there is no room, below it.
-    const panelHeight = panelRef.current?.offsetHeight ?? 240
-    const above = box.top - panelHeight - 8
-    const top = above >= margin ? above : box.bottom + 8
-    setPos({ top, left })
-  }, [open])
-
-  /**
-   * Re-measure once the panel has painted.
-   *
-   * `width: max-content` means the first pass measures a zero-width element: the panel is
-   * attached but `pos` is still undefined, so it is laid out at its min-width. Re-running
-   * after the content exists is what makes the width follow the text rather than the
-   * placeholder. Keyed on the model and the channel so a longer name (a real possibility
-   * with a `· 14,031` suffix) triggers a fresh measurement.
-   */
-  useLayoutEffect(() => {
-    if (!open) return
-    const anchor = anchorRef.current
     const panel = panelRef.current
     if (anchor === null || panel === null) return
-    const box = anchor.getBoundingClientRect()
-    const width = panel.offsetWidth
-    const margin = 8
-    const left = Math.min(
-      Math.max(margin, box.left + box.width / 2 - width / 2),
-      Math.max(margin, window.innerWidth - width - margin),
-    )
-    const above = box.top - panel.offsetHeight - 8
-    setPos(current => {
-      if (current === undefined) return current
-      const top = above >= margin ? above : box.bottom + 8
-      // Skip the write when nothing moved: an identical setState still schedules a render.
-      if (current.top === top && current.left === left) return current
-      return { top, left }
-    })
+    let frame: number | undefined
+    const update = (): void => {
+      frame = undefined
+      const box = anchor.getBoundingClientRect()
+      const panelBox = panel.getBoundingClientRect()
+      const { left, top } = creditPanelPosition(box, panelBox, {
+        width: window.innerWidth, height: window.innerHeight,
+      })
+      setPos(current => current?.top === top && current.left === left ? current : { top, left })
+    }
+    const schedule = (): void => {
+      if (frame === undefined) frame = window.requestAnimationFrame(update)
+    }
+    update()
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(schedule)
+    observer?.observe(anchor)
+    observer?.observe(panel)
+    window.addEventListener('resize', schedule)
+    window.addEventListener('scroll', schedule, true)
+    return () => {
+      observer?.disconnect()
+      window.removeEventListener('resize', schedule)
+      window.removeEventListener('scroll', schedule, true)
+      if (frame !== undefined) window.cancelAnimationFrame(frame)
+    }
   }, [open, snapshot?.model, snapshot?.channel?.total, snapshot?.spentToday])
 
   /** Outside click and Escape, the two ways any popover on this host closes. */
@@ -465,7 +433,7 @@ export function CreditDot({ t }: { readonly t?: Translate | undefined }): ReactE
             green/grey state drives the icon without a second asset. */}
         <span className="dsm-xdpool-dot-glyph" aria-hidden="true" />
       </button>
-      {!open ? null : (
+      {!open || typeof document === 'undefined' ? null : createPortal(
         <div
           ref={panelRef}
           className="dsm-xdpool-dotpanel"
@@ -572,7 +540,7 @@ export function CreditDot({ t }: { readonly t?: Translate | undefined }): ReactE
             : null}
             </>
           )}
-        </div>
+        </div>, document.body,
       )}
     </span>
   )

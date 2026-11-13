@@ -19,6 +19,12 @@ describe('the browser bundle registers under its package name', () => {
     expect([...registrations.keys()]).toEqual([name])
     expect(registrations.get(name)).toBeTypeOf('function')
   })
+
+  it('uses the host React DOM singleton for the credit panel portal', () => {
+    const bundle = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+    expect(bundle).toMatch(/require\(["']react-dom["']\)/u)
+    expect(bundle).not.toContain('react-dom/cjs/react-dom.production')
+  })
 })
 
 /**

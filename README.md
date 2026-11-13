@@ -115,7 +115,7 @@ dsh plugin --profile desktop add "file:/你的项目路径/dsh-xdpool-fork"
 
 安装包不自动执行依赖链接脚本。通常由 DeepSeek Harness 提供插件所需的共享依赖；如特殊环境出现依赖无法解析，可手动运行安装目录下的 `node scripts/link-host-peers.mjs` 进行排查。
 
-模型选择器中的账号池分别显示为 **Heybash（国内版）**、**Heybash（国际版）**，免费模型分组显示为 **Heybash · 免费模型**。
+模型选择器中的账号池分别显示为 **WorkBuddy 国内版**、**WorkBuddy 国际版**，免费模型分组显示为 **Heybash · 免费模型**。同一区域中与账号池重复的渠道模型只展示一次，原有渠道标识仍可用于已有会话。
 
 ## 从旧版升级
 

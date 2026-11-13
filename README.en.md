@@ -112,7 +112,7 @@ After editing source, rebuild and update the installed plugin, then fully quit a
 
 The package does not run a dependency-linking script during installation. DeepSeek Harness normally supplies the shared dependencies; if a particular environment cannot resolve them, run `node scripts/link-host-peers.mjs` manually from the installed package to troubleshoot.
 
-The account pools appear as **Heybash（国内版）** and **Heybash（国际版）**; the optional free-model group is **Heybash · 免费模型**.
+The account pools appear as **WorkBuddy 国内版** and **WorkBuddy 国际版**; the optional free-model group is **Heybash · 免费模型**. Channel models already offered by the same regional pool are shown once; existing channel routes remain available to saved conversations.
 
 ## Upgrading from an older version
 

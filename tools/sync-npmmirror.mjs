@@ -45,7 +45,11 @@ export async function syncMirror({
 } = {}) {
   if (version !== undefined && !VERSION.test(version)) throw new Error('Invalid target version')
   const options = { attempts, intervalMs, sleep, log }
-  const read = async (url) => (await request(fetchImpl, url)).json()
+  // Match npm/pnpm's metadata representation. The mirror can cache its
+  // generic */* representation separately from the package-manager response.
+  const read = async (url) => (await request(fetchImpl, url, {
+    headers: { accept: 'application/json' },
+  })).json()
   const official = await retry('Waiting for npm', async () => {
     const data = await read(NPM)
     const target = version ?? data['dist-tags']?.latest

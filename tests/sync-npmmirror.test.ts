@@ -20,6 +20,7 @@ describe('npm mirror synchronization', () => {
     await expect(syncMirror({ ...options, fetchImpl: fetcher })).resolves.toEqual({ version: '1.0.3', synced: false })
     expect(fetcher.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false)
     expect(fetcher.mock.calls.some(([, init]) => new Headers(init?.headers).has('cache-control'))).toBe(false)
+    expect(new Headers(fetcher.mock.calls[0]?.[1]?.headers).get('accept')).toBe('application/json')
   })
 
   it('waits for npm, triggers synchronization, and waits for the mirror to serve the version', async () => {

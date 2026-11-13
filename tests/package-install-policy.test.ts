@@ -11,6 +11,8 @@ describe('plugin installation policy', () => {
       expect(pkg.scripts[lifecycle]).toBeUndefined()
     }
     expect(pkg.files).toContain('scripts')
+    expect(pkg.files).toContain('tools/sync-npmmirror.mjs')
+    expect(pkg.scripts.postpublish).toContain('sync-npmmirror.mjs --published')
     expect(readFileSync(new URL('../scripts/link-host-peers.mjs', import.meta.url), 'utf8')).toContain('peerDependencies')
   })
 })

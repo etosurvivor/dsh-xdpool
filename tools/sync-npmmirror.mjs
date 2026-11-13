@@ -117,11 +117,14 @@ export async function syncMirror({
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2)
-  if (args.length !== 0 && (args.length !== 2 || args[0] !== '--version')) {
-    console.error('Usage: node tools/sync-npmmirror.mjs [--version X.Y.Z]')
+  const published = args.length === 1 && args[0] === '--published'
+  const publishedVersion = published ? process.env.npm_package_version : undefined
+  if ((published && (publishedVersion === undefined || !VERSION.test(publishedVersion)))
+    || (!published && args.length !== 0 && (args.length !== 2 || args[0] !== '--version'))) {
+    console.error('Usage: node tools/sync-npmmirror.mjs [--version X.Y.Z | --published (npm lifecycle only)]')
     process.exitCode = 2
   } else {
-    syncMirror(args.length === 2 ? { version: args[1] } : {}).catch(error => {
+    syncMirror(published ? { version: publishedVersion } : args.length === 2 ? { version: args[1] } : {}).catch(error => {
       console.error(error instanceof Error ? error.message : String(error))
       process.exitCode = 1
     })

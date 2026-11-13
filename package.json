@@ -55,11 +55,13 @@
     "README.en.md",
     "CHANGELOG.md",
     "LICENSE",
-    "scripts"
+    "scripts",
+    "tools/sync-npmmirror.mjs"
   ],
   "scripts": {
     "build": "tsdown",
     "prepublishOnly": "tsdown",
+    "postpublish": "node tools/sync-npmmirror.mjs --published",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "typecheck:client": "tsc -p tsconfig.client.json --noEmit"

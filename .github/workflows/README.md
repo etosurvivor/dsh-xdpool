@@ -33,7 +33,7 @@ git push origin vX.Y.Z
 ```
 推送后到仓库的 **Actions** 页看进度，几十秒即可在 npm 上看到新版本。
 
-正式版本在 npm 可用后，Release 工作流会等待并同步到国内镜像，检查版本、校验值和包下载地址。另有 **Sync npm mirror** 工作流每 15 分钟检查官方 latest，用于补上本机 `npm publish` 和发布时同步失败；也可在 Actions 页面手动运行。定时任务受 GitHub 调度影响，不保证恰好 15 分钟执行，运行失败可在 Actions 日志查看。仅启用并推送该工作流后才会实际生效。
+正式版本在 npm 可用后，Release 工作流会等待并同步到国内镜像，检查版本、校验值和包下载地址。源码目录直接执行 `npm publish` 也会在发布后同步；如果同步报错，npm 版本可能已经发布，应先核对 npm 与 Actions 的 **Sync npm mirror** 工作流，避免重复发布。另有该工作流每 15 分钟检查官方 latest，用于补上安装包方式发布和同步失败；也可在 Actions 页面手动运行。定时任务受 GitHub 调度影响，不保证恰好 15 分钟执行；公开仓库连续 60 天无活动时 GitHub 可能自动停用定时任务。运行失败可在 Actions 日志查看。
 > 注意：npm 的 staged publishing 策略下，若绑定页面只勾了 `npm stage publish`，
 > 发布仍会停在暂存区等待批准 —— 那种情况下这条通道也帮不上忙，所以**建议把
 > direct publish 一并勾上**，让 workflow 直接正式发布。

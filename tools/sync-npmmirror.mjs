@@ -113,6 +113,15 @@ export async function syncMirror({
     } catch (error) {
       lastError = error
       log(`Mirror synchronization attempt ${attempt + 1}/${syncAttempts} failed: ${error instanceof Error ? error.message : String(error)}`)
+      // A sync task can fail or time out after another worker already updated
+      // the mirror. Verify the artifact before submitting a redundant task.
+      try {
+        const target = await verify(true)
+        log(`Mirror serves ${target} with the correct checksum`)
+        return { version: target, synced: true }
+      } catch {
+        // Still unavailable: proceed with the bounded retry below.
+      }
       if (attempt + 1 < syncAttempts) await sleep(intervalMs)
     }
   }

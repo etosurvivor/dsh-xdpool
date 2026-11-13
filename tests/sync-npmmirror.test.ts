@@ -50,6 +50,19 @@ describe('npm mirror synchronization', () => {
     expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(2)
   })
 
+  it('accepts a verified mirror after a sync task fails without submitting another task', async () => {
+    let mirrorReads = 0
+    const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes('registry.npmjs.org')) return json(doc())
+      if (init?.method === 'PUT') return json({ ok: true, id: 'task1' })
+      if (url.endsWith('/syncs/task1')) return json({ state: 'fail' })
+      if (url === tarball) return new Response('archive')
+      return json(++mirrorReads === 1 ? doc('1.0.2') : doc())
+    })
+    await expect(syncMirror({ ...options, fetchImpl: fetcher })).resolves.toEqual({ version: '1.0.3', synced: true })
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1)
+  })
+
   it('does not report success for a matching version with the wrong checksum or missing tarball', async () => {
     let mode: 'checksum' | 'tarball' = 'checksum'
     const fetcher = vi.fn(async (url: string, init?: RequestInit) => {

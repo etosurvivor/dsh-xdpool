@@ -96,6 +96,8 @@ export type { PoolWebStatus }
 /** Constructor dependencies — a narrow slice of the pool runtime. */
 export interface PoolStatusRouteOptions {
   pool: WorkBuddyAccountPool
+  /** Re-announce models after a rescan changes region availability. */
+  onPoolChanged?: () => void
   /** One catalog per region; the card reads the one for its active tab. */
   catalogs: Readonly<Record<PoolRegion, WorkBuddyCatalog>>
   client: WorkBuddyUpstreamClient
@@ -1110,6 +1112,7 @@ export function registerPoolStatusRoute(ctx: Context, deps: PoolStatusRouteOptio
         if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
         try {
           const accounts = await deps.pool.scan()
+          deps.onPoolChanged?.()
           json(res, 200, { accounts: accounts.length })
         } catch (error: unknown) {
           json(res, 500, { error: safeMessage(error) })

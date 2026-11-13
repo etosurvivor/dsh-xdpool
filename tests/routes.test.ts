@@ -13,7 +13,7 @@
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { WorkBuddyAccountPool } from '../src/accounts.ts'
 import { WorkBuddyCatalog } from '../src/catalog.ts'
 import {
@@ -100,6 +100,19 @@ async function mount(accounts = 1): Promise<Map<string, unknown>> {
 }
 
 describe('pool card route table', () => {
+  it('re-announces model availability after the user rescans accounts', async () => {
+    const pool = new WorkBuddyAccountPool({ authDirs: [await fakeAuthDir(0)], logger: { warn() {} } })
+    const routes = new Map<string, unknown>(), onPoolChanged = vi.fn()
+    const { ctx } = fakeContext(routes)
+    registerPoolStatusRoute(ctx as never, {
+      pool, catalogs: { cn: new WorkBuddyCatalog(), global: new WorkBuddyCatalog() },
+      client: new WorkBuddyUpstreamClient(), onPoolChanged,
+    })
+    const handler = routes.get(POOL_RESCAN_PATH) as (req: unknown, res: unknown) => Promise<void>
+    const res = { writeHead() {}, end() {} }
+    await handler({ method: 'POST', headers: { origin: 'http://localhost:3000' } }, res)
+    expect(onPoolChanged).toHaveBeenCalledOnce()
+  })
   it('registers every route the card calls', async () => {
     const routes = await mount()
     // The read path.

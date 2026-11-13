@@ -127,11 +127,13 @@ describe('the page keeps the chain the user typed', () => {
     expect(page).toMatch(/for \(const modelId of Array\.isArray\(combo\.missing\) \? combo\.missing : \[\]\)/u)
     expect(page).toMatch(/platforms\.push\(\{ owner, models: \[model\] \}\)/u)
   })
-  it('derives the owner of a missing id from its shape', () => {
+  it('derives the owner of missing slash and colon ids', async () => {
     // A bare id is a pool model; anything else carries `provider/model`. Getting this
     // wrong would file a vanished third-party member under the pool and show it on
     // the wrong platform card.
-    expect(page).toContain("const owner = slash === -1 ? 'workbuddy' : modelId.slice(0, slash)")
+    const { draftOf } = await import('../src/client/RoutingPage.tsx')
+    const draft = draftOf({ id: 'combo:test', name: 'test', models: [], platforms: [], missing: ['codearts/model-a', 'trae:model-b'], strategy: 'fallback', stickyLimit: 1, enabled: true, contextWindow: 131072, supportsImages: false })
+    expect(draft.platforms).toEqual([{ owner: 'codearts', models: ['model-a'] }, { owner: 'trae', models: ['model-b'] }])
   })
   it('reports an unresolved member rather than hiding it', () => {
     expect(page).toContain('route.missing')

@@ -185,3 +185,93 @@ describe('route editor legacy restoration', () => {
     expect(flattenDraft(draftOf({ ...initial, models: saved, platforms: draft.platforms, missing: [] }).platforms)).toEqual(saved)
   })
 })
+
+describe('routing context windows', () => {
+  it('recalculates the actual chain after its smallest member is removed and saved', async () => {
+    let store = { version: 1 as const, combos: [{ name: 'test', models: ['codearts/a', 'codearts/b', 'codearts/c'] }] }
+    const hosts = [
+      { id: 'codearts:a', channel: 'codearts', modelId: 'a', name: 'a', contextWindow: 1_000_000 },
+      { id: 'codearts:b', channel: 'codearts', modelId: 'b', name: 'b', contextWindow: 400_000 },
+      { id: 'codearts:c', channel: 'codearts', modelId: 'c', name: 'c', contextWindow: 1_048_576 },
+    ]
+    const catalog = new AggregateCatalog(() => store, () => [], () => hosts)
+    await catalog.refresh(); expect(catalog.comboRows()[0]?.contextWindow).toBe(400_000)
+    store = { ...store, combos: [{ name: 'test', models: ['codearts/a', 'codearts/c'] }] }
+    await catalog.refresh(); expect(catalog.comboRows()[0]?.contextWindow).toBe(1_000_000)
+    const adapter = createWorkBuddyAdapter({ catalog, shim: { baseUrl: () => 'http://127.0.0.1', token: () => 'test' } as never, ctx: {} as never })
+    expect(adapter.buildModels()[0]?.contextWindow).toBe(1_000_000)
+  })
+
+  it('refuses an in-flight turn sized against a stale larger window', async () => {
+    let now = Date.now(); let size = 400_000
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    try {
+      let hosts: Awaited<ReturnType<ReturnType<typeof createChannelLane>['rows']>> = []
+      const store = { version: 1 as const, combos: [{ name: 'test', models: ['codearts/m'] }] }
+      const catalog = new AggregateCatalog(() => store, () => [], () => hosts)
+      const stream = vi.fn(() => (async function* () { yield { type: 'finish', reason: { kind: 'stop' } } })())
+      const llm: ChannelLaneLlm = { listModels: async () => [{ id: 'm' }], resolveModelInfo: async () => ({ context: { contextWindow: size } }), stream }
+      const channels = createChannelLane({ llm, providers: () => ['codearts'], toId: (c, m) => `${c}:${m}`, onRows: async rows => { hosts = rows; await catalog.refresh() } })
+      await channels.rows(); expect(catalog.comboRows()[0]?.contextWindow).toBe(400_000)
+      const shim = createWorkBuddyShim({ pool: { list: () => [], acquire: async () => undefined } as unknown as WorkBuddyAccountPool, client: {} as WorkBuddyUpstreamClient, catalog: new WorkBuddyCatalog(), aggregate: { catalog, readStore: () => store }, channels })
+      running.push(shim); await shim.ready
+      size = 200_000; now += 61_000
+      const response = await fetch(`${shim.baseUrl()}/v1/chat/completions`, { method: 'POST', headers: { Authorization: `Bearer ${shim.token()}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'combo:test', messages: [{ role: 'user', content: 'test' }] }) })
+      expect(response.status).toBe(400)
+      expect(await response.text()).toContain('context_length_exceeded')
+      expect(stream).not.toHaveBeenCalled()
+      expect(catalog.comboRows()[0]?.contextWindow).toBe(200_000)
+    } finally { clock.mockRestore() }
+  })
+
+  it('refreshes the chain when a live channel changes its declared window', async () => {
+    vi.useFakeTimers()
+    try {
+      let windowSize = 400_000
+      let hosts: Awaited<ReturnType<ReturnType<typeof createChannelLane>['rows']>> = []
+      const store = { version: 1 as const, combos: [{ name: 'test', models: ['codearts/m'] }] }
+      const catalog = new AggregateCatalog(() => store, () => [], () => hosts)
+      const llm: ChannelLaneLlm = { listModels: async () => [{ id: 'm' }], resolveModelInfo: async () => ({ context: { contextWindow: windowSize } }), stream: () => (async function* () {})() }
+      const lane = createChannelLane({ llm, providers: () => ['codearts'], toId: (c, m) => `${c}:${m}`, onRows: async rows => { hosts = rows; await catalog.refresh() } })
+      await lane.rows()
+      expect(catalog.comboRows()[0]?.contextWindow).toBe(400_000)
+      windowSize = 200_000
+      await vi.advanceTimersByTimeAsync(61_000)
+      await lane.rows()
+      expect(catalog.comboRows()[0]?.contextWindow).toBe(200_000)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('uses each channel declaration and the smallest resolved member window', async () => {
+    let windows: Record<string, number | undefined> = { a: 1_000_000, b: 400_000 }
+    const llm: ChannelLaneLlm = {
+      listModels: async () => [{ id: 'a' }, { id: 'b' }],
+      resolveModelInfo: async (_provider, id) => ({ context: windows[id] === undefined ? {} : { contextWindow: windows[id] } }),
+      stream: () => (async function* () {})(),
+    }
+    const makeChannels = () => createChannelLane({ llm, providers: () => ['codearts'], toId: (c, m) => `${c}:${m}` })
+    let hosts = await makeChannels().rows()
+    expect(hosts.map(row => row.contextWindow)).toEqual([1_000_000, 400_000])
+    const store = { version: 1 as const, combos: [{ name: 'test', models: ['codearts/a', 'codearts/b'] }] }
+    const catalog = new AggregateCatalog(() => store, () => [], () => hosts)
+    await catalog.refresh()
+    expect(catalog.comboRows()[0]?.contextWindow).toBe(400_000)
+    const { combosStatusOf } = await import('../src/index.ts')
+    expect(combosStatusOf(store, catalog, [], hosts).candidates.map(row => row.contextWindow)).toEqual([1_000_000, 400_000])
+    const adapter = createWorkBuddyAdapter({ catalog, shim: { baseUrl: () => 'http://127.0.0.1', token: () => 'test' } as never, ctx: {} as never })
+    expect(adapter.buildModels()[0]?.contextWindow).toBe(400_000)
+    windows = { a: 1_000_000, b: 200_000 }; hosts = await makeChannels().rows(); await catalog.refresh()
+    expect(catalog.comboRows()[0]?.contextWindow).toBe(200_000)
+    windows = { a: 1_000_000, b: undefined }; hosts = await makeChannels().rows(); await catalog.refresh()
+    expect(catalog.comboRows()[0]?.contextWindow).toBe(131_072)
+  })
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])('rejects invalid window %s', async value => {
+    const llm: ChannelLaneLlm = { listModels: async () => [{ id: 'm' }], resolveModelInfo: async () => ({ context: { contextWindow: value } }), stream: () => (async function* () {})() }
+    const hosts = await createChannelLane({ llm, providers: () => ['codearts'], toId: (c, m) => `${c}:${m}` }).rows()
+    expect(hosts[0]?.contextWindow).toBeUndefined()
+    expect(resolveComboMember('codearts/m', { pool: [], aggregate: [], host: hosts })?.contextWindow).toBe(131_072)
+  })
+})

@@ -18,7 +18,6 @@ import type { CSSProperties } from 'react'
 import { createElement as h } from 'react'
 import { SIDEBAR_ROW_FIELD, readSidebarRow } from './sidebar-row.ts'
 import { DIST_OPTIONS, distHint, distLabel } from './distribution.ts'
-import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import {
   POOL_ACCOUNT_DISABLE_PATH,
@@ -65,6 +64,8 @@ import { ModelFactsRow } from './model-facts-row.tsx'
 import type { ModelProbeReading } from './model-facts.ts'
 import type { UsageSummary } from '../stats.ts'
 import { ChannelPoolSection } from './ChannelPoolSection.tsx'
+// 豆包接入暂停，恢复时一并取消卡片引用的注释。
+// import { DoubaoWorkCard } from './DoubaoWorkCard.tsx'
 import { BackupPanel } from './BackupPanel.tsx'
 import { POOL_VERSION } from '../version.ts'
 import type { XdPoolSettingsKey } from './locales.ts'
@@ -92,18 +93,14 @@ export interface PoolCardSettingsScope {
    */
   set?(field: string, value: unknown): Promise<boolean | void> | boolean | void
 }
-/** Props delivered by the Plugin configuration item slot. */
 /**
- * Props delivered by the Plugin configuration item slot.
+ * Props consumed by the pool card on both the settings and sidebar pages.
  *
- * `settingsScope` is supplied at runtime by the settings-plugins slot for
- * cards that declare a settings section. `PropsRuntime` does not type it, so
- * it is declared here as optional — every use site guards for its absence and
- * falls back to a read-only card.
+ * Both registrations inject these values; older and newer host releases expose
+ * the settings scope through different services. The card remains read-only
+ * when a host does not provide it.
  */
-export type PoolCardProps = PropsRuntime<'settings.plugin.item'>
-  & Partial<PoolCardInjected>
-  & { settingsScope?: PoolCardSettingsScope }
+export type PoolCardProps = Partial<PoolCardInjected>
 /**
  * Default context window the card offers as the "capped" choice, in tokens.
  * Mirrors the host-side DEFAULT_CONTEXT_BUDGET; declared here rather than
@@ -2235,6 +2232,11 @@ export function PoolCard({ t, settingsScope }: PoolCardProps) {
                 })}
               </div>
               </section>
+              {/* 豆包工作暂不启用。
+              <section className="dsm-xdpool-cpool" aria-label="豆包工作账号">
+                <div className="dsm-xdpool-cpool-grid"><DoubaoWorkCard /></div>
+              </section>
+              */}
               <ChannelPoolSection t={t} />
               {/* Backup moved to its own page. It operates on the whole credential set
                   rather than on one pool card, and sitting it under the accounts implied a

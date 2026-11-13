@@ -2736,6 +2736,7 @@ interface HostModelRow {
   channel: string;
   modelId: string;
   name: string;
+  contextWindow?: number;
   supportsImages?: boolean;
   supportedEfforts?: readonly string[];
 }
@@ -3105,6 +3106,7 @@ interface ChannelLaneRow {
   channel: string;
   modelId: string;
   name: string;
+  contextWindow?: number;
   supportsImages?: boolean;
   supportedEfforts?: readonly string[];
 }
@@ -3336,6 +3338,8 @@ interface WorkBuddyAdapterOptions {
   ctx: Context$1;
   providerId?: string;
   displayName?: string;
+  /** Whether this region currently has any account; absent for non-pool adapters. */
+  hasAccount?: (() => boolean) | undefined;
   /**
    * The rows this provider serves, when it is a LATER lane rather than a pool.
    *
@@ -4147,6 +4151,8 @@ export declare function writePreferredId(accountId: string | undefined, path?: s
 /** Constructor dependencies — a narrow slice of the pool runtime. */
 interface PoolStatusRouteOptions {
   pool: WorkBuddyAccountPool;
+  /** Re-announce models after a rescan changes region availability. */
+  onPoolChanged?: () => void;
   /** One catalog per region; the card reads the one for its active tab. */
   catalogs: Readonly<Record<PoolRegion, WorkBuddyCatalog>>;
   client: WorkBuddyUpstreamClient;

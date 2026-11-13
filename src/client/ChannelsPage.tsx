@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   POOL_CHANNELS_PATH,
+  POOL_RESCAN_PATH,
   ROUTE_OWNED_ELSEWHERE,
   type PoolWebChannel,
   type PoolWebChannelsStatus,
@@ -198,6 +199,11 @@ export function ChannelsPage({ t }: ChannelsPageProps) {
         }
         setUi(prev => ({ ...prev, [channel.id]: { phase: 'done', accountId } }))
         void loadConnected().catch(() => {})
+        // The two WorkBuddy channels feed the region pools; refresh their
+        // account availability as soon as sign-in finishes.
+        if (channel.id === 'buddy' || channel.id === 'workbuddy') {
+          void fetch(POOL_RESCAN_PATH, { method: 'POST', credentials: 'same-origin' }).catch(() => {})
+        }
       }
       timers.current.set(channel.id, window.setInterval(() => { void tick() }, POLL_INTERVAL_MS))
     },

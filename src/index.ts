@@ -6,6 +6,8 @@
  * @module dsh-xdpool/index
  */
 import { creditReservesWith } from './credit-reserve.ts'
+// 暂停豆包接入；保留源码，恢复时取消此处及 apply 中的注释。
+// import { installDoubaoWork } from './doubao-work-service.ts'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -27,6 +29,7 @@ import {
   XDPOOL_PROVIDER,
   EXTRA_LANE_NAMES,
   createWorkBuddyAdapter,
+  visiblePoolModels,
   type AdapterHandle,
   type WorkBuddyAdapter,
 } from './adapter.ts'
@@ -186,15 +189,16 @@ export function combosStatusOf(
      * credential and endpoint the model picker uses.
      *
      * `usable: true` because a row only appears in this list once the host has
-     * already listed it for that channel, i.e. the account exists. The window
-     * uses a conservative default; image support comes from resolved model metadata.
+     * already listed it for that channel, i.e. the account exists. Window and
+     * image support come from resolved model metadata, with conservative fallback.
      */
     ...hostRows.map(row => ({
       id: `${row.channel}/${row.modelId}`,
       name: row.name,
       owner: row.channel,
       usable: true,
-      contextWindow: COMBO_DEFAULT_CONTEXT_WINDOW,
+      contextWindow: Number.isSafeInteger(row.contextWindow) && row.contextWindow! > 0
+        ? row.contextWindow! : COMBO_DEFAULT_CONTEXT_WINDOW,
       supportsImages: row.supportsImages === true,
       siblings: [] as readonly string[],
     })),
@@ -738,6 +742,7 @@ let freeLaneSwitch: (enabled: boolean) => void = () => {}
  * because its models read the shim origin at construction time.
  */
 export function apply(ctx: Context, config: Config = {}): void {
+  // installDoubaoWork(ctx)
   const core = createCore(ctx.logger)
   // Cross-generation guard, checked ONCE at load.
   //
@@ -1183,6 +1188,7 @@ function canonicalJson(value: unknown): string {
   // that member and advertise only the aggregate half. The CN rows are the
   // ones the CN shim can actually serve, which is where chains are answered.
   let hostRosterCache: readonly HostModelRow[] = []
+  let appliedHostRoster = '[]'
   const aggregateCatalog = new AggregateCatalog(
     () => readAggregateSettingsSync(),
     () => core.catalogs.cn.current(),
@@ -1229,6 +1235,17 @@ function canonicalJson(value: unknown): string {
    */
   const channelLane = createChannelLane({
     llm: ctx.llm as unknown as ChannelLaneLlm,
+    onRows: async rows => {
+      const snapshot = JSON.stringify(rows)
+      if (snapshot === appliedHostRoster) return
+      hostRosterCache = rows
+      try {
+        await aggregateCatalog.refresh()
+        if (hostRosterCache === rows) appliedHostRoster = snapshot
+      } catch (error: unknown) {
+        ctx.logger?.warn?.('heybash-xdpool: could not refresh channel capabilities:', error)
+      }
+    },
     providers: () => REGISTERED_CHANNELS
       .map(channel => channel.id)
       .filter(id => channelListableAsRows(id, POOL_OWNED_CHANNELS)),
@@ -1267,15 +1284,7 @@ function canonicalJson(value: unknown): string {
    */
   const hostRoster = async (): Promise<readonly HostModelRow[]> => {
     try {
-      const rows = await channelLane.rows()
-      hostRosterCache = rows.map(row => ({
-        id: row.id,
-        channel: row.channel,
-        modelId: row.modelId,
-        name: row.name,
-        ...row.supportsImages === undefined ? {} : { supportsImages: row.supportsImages },
-        ...row.supportedEfforts === undefined ? {} : { supportedEfforts: row.supportedEfforts },
-      }))
+      await channelLane.rows()
     } catch (error: unknown) {
       // Keep whatever the last successful listing produced. An empty list here
       // would silently drop every channel member from every chain on screen.
@@ -1435,6 +1444,7 @@ function canonicalJson(value: unknown): string {
   // mount and the card shows an offline banner — the provider still works.
   ctx.inject(['webServer'], (webCtx) => registerPoolStatusRoute(webCtx, {
     pool: core.pool,
+    onPoolChanged: () => invalidateCatalog(),
     catalogs: core.catalogs,
     client: core.client,
     // The usage panel reads the SAME recorder both shims write to, so its totals
@@ -1500,6 +1510,7 @@ function canonicalJson(value: unknown): string {
       // A newly ignored account must leave the pool immediately, and a
       // restored one must come back without waiting for the next tick.
       if (!ignored) await core.pool.scan()
+      invalidateCatalog()
     },
     ignoredAccounts: () => ignoredAccounts,
     // Pin one account to be tried first, or clear the pin with null.
@@ -1920,6 +1931,8 @@ function canonicalJson(value: unknown): string {
         // serving only the desktop credentials, which is exactly how the scanned
         // accounts went missing while the channel cards still rendered.
         void adoptChannelPackAccounts(scoped, core.pool, ctx.logger)
+          .then(() => { if (!stopped) invalidateCatalog() })
+          .catch((error: unknown) => { ctx.logger.warn('heybash-xdpool: account adoption failed', error) })
       })
   })
   // Register once BOTH loopback listeners hold a port: each adapter reads its
@@ -1940,6 +1953,7 @@ function canonicalJson(value: unknown): string {
             catalog: core.catalogs.cn,
             providerId: POOL_PROVIDER_BY_REGION.cn,
             displayName: POOL_NAME_BY_REGION.cn,
+            hasAccount: () => core.pool.list('cn').length > 0,
           }),
           global: createWorkBuddyAdapter({
             ctx,
@@ -1947,6 +1961,7 @@ function canonicalJson(value: unknown): string {
             catalog: core.catalogs.global,
             providerId: POOL_PROVIDER_BY_REGION.global,
             displayName: POOL_NAME_BY_REGION.global,
+            hasAccount: () => core.pool.list('global').length > 0,
           }),
           // The third lane: providers the user holds a key for. It reuses the CN
           // shim's loopback (the composite model id in the request is what
@@ -2181,7 +2196,7 @@ function canonicalJson(value: unknown): string {
           if (request.provider !== XDPOOL_PROVIDER
             && request.provider !== XDPOOL_GLOBAL_PROVIDER) return []
           const region = request.provider === XDPOOL_GLOBAL_PROVIDER ? 'global' : 'cn'
-          return core.catalogs[region].visible().map(model => ({
+          return visiblePoolModels(core.catalogs[region], core.pool.list(region).length > 0).map(model => ({
             id: model.id,
             name: model.name,
             contextWindow: model.contextWindow,
@@ -2239,6 +2254,7 @@ function canonicalJson(value: unknown): string {
       void core.pool.scan().then(
         accounts => {
           ctx.logger.info?.(`heybash-xdpool: ${accounts.length} WorkBuddy account(s) in rotation`)
+          invalidateCatalog()
         },
         (error: unknown) => {
           ctx.logger.warn('heybash-xdpool: account discovery failed', error)

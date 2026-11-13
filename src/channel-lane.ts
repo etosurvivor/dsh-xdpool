@@ -61,6 +61,7 @@ export interface ChannelLaneLlm {
   resolveModelInfo?: (provider: string, model: string, signal?: AbortSignal) => Promise<{
     reasoning?: { efforts: readonly { id: string }[] }
     inputModalities?: readonly string[]
+    context?: { contextWindow?: number }
   }>
   stream: (options: Record<string, unknown>) => AsyncIterable<Record<string, unknown>>
 }
@@ -132,6 +133,7 @@ export interface ChannelLaneRow {
   channel: string
   modelId: string
   name: string
+  contextWindow?: number
   supportsImages?: boolean
   supportedEfforts?: readonly string[]
 }
@@ -170,9 +172,11 @@ export function createChannelLane(options: {
   toId: (channel: string, modelId: string) => string
   /** The host attachment store, resolved per turn; absent means "no images". */
   attachments?: () => ChannelLaneAttachments | undefined
+  /** Called after a complete roster read, including cache refreshes. */
+  onRows?: (rows: readonly ChannelLaneRow[]) => void | Promise<void>
   logger?: { warn?: (...args: unknown[]) => void }
 }): ChannelLane {
-  const { llm, providers, toId, attachments, logger } = options
+  const { llm, providers, toId, attachments, onRows, logger } = options
   const cache = new Map<string, { at: number; rows: readonly ChannelLaneRow[] }>()
   const inflight = new Map<string, Promise<readonly ChannelLaneRow[]>>()
 
@@ -185,9 +189,12 @@ export function createChannelLane(options: {
       .then(models => Promise.all(models.map(async model => {
         let supportedEfforts: readonly string[] | undefined
         let supportsImages: boolean | undefined
+        let contextWindow: number | undefined
         if (llm.resolveModelInfo !== undefined) {
           try {
             const info = await llm.resolveModelInfo(channel, model.id)
+            const declaredWindow = info.context?.contextWindow
+            if (Number.isSafeInteger(declaredWindow) && declaredWindow! > 0) contextWindow = declaredWindow
             if (Array.isArray(info.inputModalities)) supportsImages = info.inputModalities.includes('image')
             // Binary channels expose an enabled state, represented by the chain's
             // common High level; graded channels keep their exact named levels.
@@ -202,6 +209,7 @@ export function createChannelLane(options: {
           channel,
           modelId: model.id,
           name: model.name ?? model.id,
+          ...contextWindow === undefined ? {} : { contextWindow },
           ...supportsImages === undefined ? {} : { supportsImages },
           ...supportedEfforts === undefined ? {} : { supportedEfforts },
         }
@@ -224,7 +232,11 @@ export function createChannelLane(options: {
   }
 
   return {
-    rows: async () => (await Promise.all(providers().map(fetchRows))).flat(),
+    rows: async () => {
+      const rows = (await Promise.all(providers().map(fetchRows))).flat()
+      await onRows?.(rows)
+      return rows
+    },
     resolve: (id: string) => {
       const separator = id.indexOf(':')
       if (separator <= 0 || separator === id.length - 1) return undefined

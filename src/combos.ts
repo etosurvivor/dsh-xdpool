@@ -353,6 +353,7 @@ export interface HostModelRow {
   channel: string
   modelId: string
   name: string
+  contextWindow?: number
   supportsImages?: boolean
   supportedEfforts?: readonly string[]
 }
@@ -425,7 +426,8 @@ export function resolveComboMember(modelId: string, sources: ComboSources): Comb
       host: true,
       channel: hostRow.channel,
       name: hostRow.name,
-      contextWindow: COMBO_DEFAULT_CONTEXT_WINDOW,
+      contextWindow: Number.isSafeInteger(hostRow.contextWindow) && hostRow.contextWindow! > 0
+        ? hostRow.contextWindow! : COMBO_DEFAULT_CONTEXT_WINDOW,
       maxOutputTokens: COMBO_DEFAULT_MAX_OUTPUT,
       supportsImages: hostRow.supportsImages === true,
       ...hostRow.supportedEfforts === undefined ? {} : { supportedEfforts: hostRow.supportedEfforts },

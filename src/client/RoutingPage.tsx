@@ -8,8 +8,7 @@
  *
  * Split out of {@link ./PoolCard} for the same reason as the aggregate page: it
  * reads its own document (`POOL_COMBOS_PATH`) and must not ride the pool card's
- * 30-second poll, because a routing document only changes when this page writes
- * it.
+ * 30-second poll. Opening the page or saving chains reads its own document.
  *
  * Two deliberate honesty choices, both about not lying to the user:
  *
@@ -132,7 +131,7 @@ export function draftOf(combo: PoolWebCombo): ChainDraft {
     .map(group => {
       const owner = typeof group.owner === 'string' ? group.owner : 'workbuddy'
       return { owner, models: Array.isArray(group.models)
-        ? [...new Set(group.models.filter(model => typeof model === 'string').map(model => bareForOwner(owner, model)))]
+        ? [...new Set((group.models as unknown[]).filter((model): model is string => typeof model === 'string').map(model => bareForOwner(owner, model)))]
         : [] }
     })
   const known = new Set(Array.isArray(combo.models) ? combo.models : [])
@@ -182,6 +181,13 @@ function compact(value: number): string {
   if (value >= 1_000_000) return `${Math.round(value / 100_000) / 10}M`
   if (value >= 1_000) return `${Math.round(value / 100) / 10}K`
   return String(value)
+}
+
+/** Match the server's minimum over members it can currently resolve. */
+export function draftContextWindow(models: readonly string[], candidates: ReadonlyMap<string, PoolWebComboCandidate>): number | undefined {
+  const windows = models.map(id => candidates.get(id)?.contextWindow)
+    .filter((value): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value > 0)
+  return windows.length === 0 ? undefined : Math.min(...windows)
 }
 export function RoutingPage({ t }: RoutingPageProps) {
   const [status, setStatus] = useState<PoolWebCombosStatus | undefined>(undefined)
@@ -387,6 +393,10 @@ export function RoutingPage({ t }: RoutingPageProps) {
                   key={draft.key}
                   draft={draft}
                   editable={draft.key === editing}
+                  preview={draft.key === editing || (() => {
+                    const saved = combos.find(combo => combo.id === draft.id)
+                    return saved === undefined || JSON.stringify(draft.flat) !== JSON.stringify(draftOf(saved).flat)
+                  })()}
                   candidateById={candidateById}
                   t={t}
                   onEdit={() => { setEditing(draft.key) }}
@@ -425,9 +435,10 @@ export function RoutingPage({ t }: RoutingPageProps) {
  * the roster lost instead of quietly presenting a shorter chain than the user
  * typed.
  */
-function ChainRow({
+export function ChainRow({
   draft,
   editable,
+  preview,
   candidateById,
   t,
   onEdit,
@@ -435,6 +446,7 @@ function ChainRow({
 }: {
   draft: ChainDraft
   editable: boolean
+  preview: boolean
   candidateById: Map<string, PoolWebComboCandidate>
   t?: Translate | undefined
   onEdit: () => void
@@ -449,6 +461,8 @@ function ChainRow({
    */
   const flat = draft.flat
   const missing = flat.filter(model => candidateById.has(model) === false)
+  const window = draftContextWindow(flat, candidateById)
+  const windowText = window === undefined ? '—' : compact(window)
   return (
     <div className="dsm-xdpool-rt-row" data-off={draft.enabled ? 'false' : 'true'}>
       <div className="dsm-xdpool-rt-rowhead">
@@ -465,6 +479,11 @@ function ChainRow({
           </span>
           <span className="dsm-xdpool-pill" data-tone="off">
             {t?.('route.memberCount', { count: flat.length }) ?? `${flat.length} model(s)`}
+          </span>
+          <span className="dsm-xdpool-pill" data-tone="off" title={t?.('route.contextHint') ?? 'Smallest context window among currently available members.'}>
+            {preview
+              ? (t?.('route.contextPreview', { tokens: windowText }) ?? `Context preview ${windowText} (save to apply)`)
+              : (t?.('route.contextWindow', { tokens: windowText }) ?? `Context ${windowText}`)}
           </span>
         </span>
         <span className="dsm-xdpool-pageactions">

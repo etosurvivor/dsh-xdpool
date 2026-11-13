@@ -1069,6 +1069,13 @@ function withBareModelId(raw: string, modelId: string): string {
       aggregate: aggregate === undefined ? [] : aggregate.catalog.providerRows(),
       host: channels === undefined ? [] : await channels.rows(),
     }
+    const refreshed = aggregate?.catalog.findCombo(row.id)
+    if (refreshed !== undefined && refreshed.contextWindow < row.contextWindow) {
+      // The host sized this turn against the earlier descriptor. Do not dispatch
+      // it to a newly smaller fallback; let the caller re-resolve and compact.
+      writeOpenAIError(res, 400, 'context_length_exceeded', `chain ${row.id}: model context window changed from ${row.contextWindow} to ${refreshed.contextWindow}; retry with the refreshed context limit`)
+      return
+    }
     let members = comboChain(row)
       .map(modelId => resolveComboMember(modelId, sources))
       .filter((member): member is ComboMember => member !== undefined)

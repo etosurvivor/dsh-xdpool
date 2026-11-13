@@ -113,6 +113,8 @@ export interface WorkBuddyAdapterOptions {
   ctx: Context
   providerId?: string
   displayName?: string
+  /** Whether this region currently has any account; absent for non-pool adapters. */
+  hasAccount?: (() => boolean) | undefined
   /**
    * The rows this provider serves, when it is a LATER lane rather than a pool.
    *
@@ -133,6 +135,10 @@ export interface WorkBuddyAdapter {
   buildModels: () => Model<Api>[]
   /** Rebuild the adapter's provider snapshot; call after a catalog update. */
   invalidate: () => void
+}
+/** Keep catalog and preferences intact while hiding a region with no accounts. */
+export function visiblePoolModels(catalog: WorkBuddyCatalog, hasAccount: boolean): readonly WorkBuddyModelInfo[] {
+  return hasAccount ? catalog.visible() : []
 }
 /**
  * What `ctx.llm.registerAdapter` hands back: a disposer that also carries
@@ -349,7 +355,7 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
         ...catalog.comboRows().map(row => toComboModel(row, baseUrl, providerId)),
       ]
     }
-    return catalog.visible().map(info => toPiModel(info, baseUrl, providerId))
+    return visiblePoolModels(catalog, options.hasAccount?.() !== false).map(info => toPiModel(info, baseUrl, providerId))
   }
   /**
    * Build a fresh provider object whose `models` array is the catalog as it

@@ -105,6 +105,12 @@ jobs:
         if: github.event_name == 'push' || inputs.publish
         # OIDC 自动生效；npm CLI 会先尝试 OIDC，再回退到传统 token
         run: npm publish --ignore-scripts --access public
+      - name: Sync npm package to mainland mirror
+        if: github.event_name == 'push' || inputs.publish
+        timeout-minutes: 25
+        # npm may accept a publish before the version becomes downloadable.
+        # The script waits, synchronizes, and checks the mirror's package.
+        run: node tools/sync-npmmirror.mjs --version "$(node -p "require('./package.json').version")"
       - name: Create the GitHub release (opt-in; needs a PAT to show a human author)
         # 默认**不在**这里建 Release，原因是身份，不是排版。
         #

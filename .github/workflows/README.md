@@ -12,7 +12,7 @@ Trusted Publishing 因此成为唯一无码可用的官方通道，也是 npm �
 ## 首次启用要做的两件事
 1. **npm 侧绑定**：npmjs.com → 该包 → Settings → **Trusted Publisher** →
    选 **GitHub Actions**，填：
-   - Organization or user：`XDTrees`
+   - Organization or user：`etosurvivor`
    - Repository：`dsh-xdpool`
    - Workflow filename：`release.yml`
    - Environment name：留空
@@ -32,6 +32,8 @@ git push origin main
 git push origin vX.Y.Z
 ```
 推送后到仓库的 **Actions** 页看进度，几十秒即可在 npm 上看到新版本。
+
+正式版本在 npm 可用后，Release 工作流会等待并同步到国内镜像，检查版本、校验值和包下载地址。另有 **Sync npm mirror** 工作流每 15 分钟检查官方 latest，用于补上本机 `npm publish` 和发布时同步失败；也可在 Actions 页面手动运行。定时任务受 GitHub 调度影响，不保证恰好 15 分钟执行，运行失败可在 Actions 日志查看。仅启用并推送该工作流后才会实际生效。
 > 注意：npm 的 staged publishing 策略下，若绑定页面只勾了 `npm stage publish`，
 > 发布仍会停在暂存区等待批准 —— 那种情况下这条通道也帮不上忙，所以**建议把
 > direct publish 一并勾上**，让 workflow 直接正式发布。

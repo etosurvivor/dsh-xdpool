@@ -1,0 +1,25 @@
+# Covers manual npm publishes and retries after a failed release-time sync.
+name: Sync npm mirror
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: heybash-xdpool-npm-mirror
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Compare and sync the official latest version
+        run: node tools/sync-npmmirror.mjs

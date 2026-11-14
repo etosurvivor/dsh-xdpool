@@ -326,7 +326,22 @@ export function CreditDot({ t }: { readonly t?: Translate | undefined }): ReactE
     return () => { observer.disconnect() }
   }, [])
 
-  /** Keep body-relative panel and viewport-relative anchor in the same coordinate space. */
+  /**
+   * Keep the panel glued to its trigger.
+   *
+   * The panel is portaled to `document.body` and positioned `fixed`, so its
+   * `top`/`left` are measured against the VISUAL viewport. `window.innerWidth`
+   * is the LAYOUT viewport, and the two differ whenever the page is zoomed —
+   * `visualViewport.width * scale === window.innerWidth` at scale > 1. Under a
+   * Windows display scale of 125% / 150% that mismatch is what parked the panel
+   * in the window's bottom-right corner instead of above the dot: the clamp
+   * against `window.innerWidth` allowed an `left` far past the visible edge.
+   *
+   * Taking the size and the offset from `visualViewport` puts the arithmetic in
+   * the same space the `fixed` origin uses, so the panel lines up at any scale.
+   * `offsetWidth` / `offsetHeight` are still used for the panel size: its rect
+   * already reflects the applied `pos`, and re-reading it would drift.
+   */
   useLayoutEffect(() => {
     if (!open) { setPos(undefined); return }
     const anchor = anchorRef.current
@@ -336,10 +351,18 @@ export function CreditDot({ t }: { readonly t?: Translate | undefined }): ReactE
     const update = (): void => {
       frame = undefined
       const box = anchor.getBoundingClientRect()
-      const panelBox = panel.getBoundingClientRect()
-      const { left, top } = creditPanelPosition(box, panelBox, {
-        width: window.innerWidth, height: window.innerHeight,
-      })
+      // Size only: the panel's rect origin already reflects the applied `pos`,
+      // so only width/height are meaningful here.
+      const panelBox = { width: panel.offsetWidth, height: panel.offsetHeight }
+      // `visualViewport` reports the VISIBLE region in CSS pixels, which is the
+      // space a `fixed` element is positioned in. The layout viewport
+      // (`window.innerWidth`) is larger whenever the page is zoomed, and that
+      // mismatch is what put the panel in the corner under Windows scaling.
+      const vv = window.visualViewport
+      const viewport = vv === null || vv === undefined
+        ? { width: window.innerWidth, height: window.innerHeight }
+        : { width: vv.width, height: vv.height }
+      const { left, top } = creditPanelPosition(box, panelBox, viewport)
       setPos(current => current?.top === top && current.left === left ? current : { top, left })
     }
     const schedule = (): void => {

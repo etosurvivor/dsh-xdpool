@@ -114,6 +114,24 @@ const EVENT_CHAIN_BUILDERS: Readonly<Record<string, true>> = {
 
 export const AUTOMATION_TICK_MS = 60_000
 
+/**
+ * How long after {@link WorkBuddyScheduler.start} the second kick runs.
+ *
+ * Long enough for the pool's first account scan to have produced credentials,
+ * short enough that a user watching the card sees the jobs land right away.
+ */
+export const AUTOMATION_START_SETTLE_MS = 5_000
+
+/**
+ * How long after {@link WorkBuddyScheduler.start} every unconsumed slot of today
+ * counts as due.
+ *
+ * Long enough to cover a slow first account scan plus the six jobs running one
+ * after another, short enough that an app left open all day resumes its normal
+ * schedule well before the next configured hour.
+ */
+export const AUTOMATION_STARTUP_CATCHUP_MS = 120_000
+
 /** Which jobs the automation runs, and when. */
 /**
  * The persisted daily earnings ledger.
@@ -583,6 +601,17 @@ export class WorkBuddyScheduler {
 
   private timer: NodeJS.Timeout | undefined
 
+  /** The one-shot kick scheduled just after `start`; cleared by `stop`. */
+  private settleTimer: NodeJS.Timeout | undefined
+
+  /**
+   * Deadline for the start-of-day window described in {@link dueSlot}.
+   *
+   * Zero until {@link start} sets it, so a manual `tick` before the loop starts
+   * keeps the original "only past hours" behaviour.
+   */
+  private startupCatchUpUntilMs = 0
+
   private running = false
 
   /** Guards against a slow run overlapping the next tick. */
@@ -751,6 +780,28 @@ export class WorkBuddyScheduler {
     if (this.timer !== undefined) return
     this.stopped = false
     this.running = true
+    /**
+     * Launching DSH is itself a "run today's jobs" signal.
+     *
+     * `setInterval` alone delays the first pass by a whole tick, so an app
+     * started at 17:57 ran every catch-up job at 17:58 and the card showed all
+     * six stamped on the same minute — indistinguishable from "nothing happened
+     * until I moved". Kicking the loop now, and once more shortly after, makes
+     * "I started DSH" and "the automation started" the same moment.
+     *
+     * The window opened here is what {@link dueSlot} reads: inside it, every
+     * slot of today that has not been consumed counts as due, so an off-hour
+     * launch (08:00, before the first configured hour) still runs today's jobs
+     * instead of idling until 09:00.
+     *
+     * Both kicks are cheap no-ops when the pool has no accounts yet or the day
+     * is already done: `tick` returns early on an empty pool, and `dueSlot`
+     * finds nothing left to consume.
+     */
+    this.startupCatchUpUntilMs = this.now().getTime() + AUTOMATION_STARTUP_CATCHUP_MS
+    void this.tick()
+    this.settleTimer = setTimeout(() => { void this.tick() }, AUTOMATION_START_SETTLE_MS)
+    this.settleTimer.unref?.()
     // Unref so the plugin never keeps a host process alive on its own.
     this.timer = setInterval(() => { void this.tick() }, AUTOMATION_TICK_MS)
     this.timer.unref?.()
@@ -760,6 +811,10 @@ export class WorkBuddyScheduler {
   stop(): void {
     this.stopped = true
     this.running = false
+    if (this.settleTimer !== undefined) {
+      clearTimeout(this.settleTimer)
+      this.settleTimer = undefined
+    }
     if (this.timer !== undefined) {
       clearInterval(this.timer)
       this.timer = undefined
@@ -915,6 +970,13 @@ export class WorkBuddyScheduler {
    * PASSED and its slot is still unconsumed, so a laptop that slept through
    * 10:00 still runs the job when it wakes, on the same day.
    *
+   * START-OF-DAY semantics are the other half of the same idea. "Passed" alone
+   * means a DSH started at 08:00 does NOTHING until the first configured hour
+   * (09:00), even though the user just launched the app expecting today's jobs
+   * to run. Inside the window `start` opens, every slot of today that has not
+   * been consumed is due now; after it the original rule returns, so an
+   * unattended session never fires a 21:00 job at 09:30.
+   *
    * The EARLIEST unconsumed candidate wins, which is what keeps a two-hour job
    * (`travelHours: [9, 21]`) whole: consuming the earliest due slot leaves the
    * later one for its own hour.
@@ -925,9 +987,10 @@ export class WorkBuddyScheduler {
     const current = Number(zonedParts(now).hour)
     const today = dayKey(now)
     const fired = this.firedSlotsOf(kind)
+    const catchUp = now.getTime() <= this.startupCatchUpUntilMs
     // Ordered by configured hour, so the first match is the earliest due one.
     for (const candidate of [...hours].sort((a, b) => a - b)) {
-      if (candidate > current) break
+      if (!catchUp && candidate > current) break
       const slot = `${today}T${String(candidate).padStart(2, '0')}`
       if (!fired.has(slot)) return slot
     }
@@ -958,6 +1021,19 @@ export class WorkBuddyScheduler {
 
   private async tick(): Promise<void> {
     if (!this.enabled || this.stopped || this.busy) return
+    /**
+     * Never spend a slot on an empty pool.
+     *
+     * The kick {@link start} fires runs within milliseconds of load, which in
+     * some launches lands BEFORE the pool's first credential scan (measured: all
+     * six jobs reported "0 accounts ok" while the card already listed two
+     * accounts). `runJob` treats "0 eligible accounts" as a successful pass, so
+     * the slot was marked consumed and the day's jobs never ran again — the
+     * opposite of what the kick is for. Returning before the ledger is touched
+     * leaves the slot unconsumed, so the settle kick and the regular timer pick
+     * the work up as soon as the pool is ready.
+     */
+    if (this.accountsInOrder().length === 0) return
     this.busy = true
     try {
       const now = this.now()

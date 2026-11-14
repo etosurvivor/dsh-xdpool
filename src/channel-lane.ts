@@ -316,7 +316,7 @@ export function mapFinishReason(reason: unknown): string {
 }
 
 /** Fold host chunks into OpenAI delta objects. */
-export function toChannelEvent(chunk: Record<string, unknown>): ChannelLaneEvent | undefined {
+export function toChannelEvent(chunk: Record<string, unknown>, toolIndex = 0): ChannelLaneEvent | undefined {
   switch (chunk.type) {
     case 'text-delta':
       return { kind: 'delta', delta: { content: String(chunk.text ?? '') } }
@@ -330,7 +330,7 @@ export function toChannelEvent(chunk: Record<string, unknown>): ChannelLaneEvent
       const fn: Record<string, unknown> = { arguments: String(chunk.argumentsDelta ?? '') }
       // OpenAI sends the function name once, on the first fragment of a call.
       if (name !== undefined && name !== '') fn.name = name
-      const call: Record<string, unknown> = { index: 0, function: fn }
+      const call: Record<string, unknown> = { index: toolIndex, function: fn }
       if (id !== '') call.id = id
       return { kind: 'delta', delta: { tool_calls: [call] } }
     }
@@ -402,12 +402,22 @@ async function* runTurn(input: {
     if (selected !== '') options.reasoningEffort = selected
   }
 
+  // Host block indexes also include text/reasoning; map tool blocks to compact,
+  // stable OpenAI indexes so parallel fragments are never merged together.
+  const toolIndexes = new Map<number | string, number>()
   for await (const chunk of llm.stream(options)) {
     if (chunk.type === 'finish' && typeof chunk.reason === 'object' && chunk.reason !== null && (chunk.reason as { kind?: unknown }).kind === 'error') {
       const failure = (chunk.reason as { failure?: { message?: unknown } }).failure
       throw new Error(typeof failure?.message === 'string' ? failure.message : `channel ${channel} model request failed`)
     }
-    const event = toChannelEvent(chunk)
+    let toolIndex = 0
+    if (chunk.type === 'tool-call-delta') {
+      const key = typeof chunk.index === 'number' ? chunk.index : String(chunk.id ?? '')
+      const existing = toolIndexes.get(key)
+      toolIndex = existing ?? toolIndexes.size
+      if (existing === undefined) toolIndexes.set(key, toolIndex)
+    }
+    const event = toChannelEvent(chunk, toolIndex)
     if (event !== undefined) yield event
   }
 }

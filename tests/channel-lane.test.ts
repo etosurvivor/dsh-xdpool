@@ -315,6 +315,43 @@ describe('the gateway serving a channel', () => {
     })
   })
 
+  it.each([true, false])('keeps interleaved parallel tool calls separate (stream=%s)', async (stream) => {
+    const llm = fakeLlm({
+      models: { qoder: [{ id: 'M' }] },
+      chunks: { '*': [
+        { type: 'reasoning-delta', index: 0, text: 'thinking' },
+        { type: 'tool-call-delta', index: 1, id: 'call_skill', name: 'skill', argumentsDelta: '{"name":' },
+        { type: 'tool-call-delta', index: 2, id: 'call_bash', name: 'bash', argumentsDelta: '{"command":' },
+        { type: 'tool-call-delta', index: 1, id: 'call_skill', argumentsDelta: '"upgrade-pgy-task-fleet"}' },
+        { type: 'tool-call-delta', index: 2, id: 'call_bash', argumentsDelta: '"pwd"}' },
+        { type: 'finish', reason: { kind: 'toolUse' } },
+      ] },
+    })
+    const gateway = await gatewayWithChannel(llm)
+    const response = await gateway.call({ model: 'qoder:M', stream, messages: [{ role: 'user', content: 'test' }] })
+    expect(response.status).toBe(200)
+    let calls: Array<{ id?: string; function?: { name?: string; arguments?: string } }>
+    if (stream) {
+      const frames = response.text.split('\n\n').filter(line => line.startsWith('data: {'))
+        .map(line => JSON.parse(line.slice(6)) as Record<string, any>)
+      const deltas = frames.flatMap(frame => frame.choices[0].delta.tool_calls ?? [])
+      const byIndex = new Map<number, { id?: string; function: { name?: string; arguments: string } }>()
+      for (const call of deltas) {
+        const merged = byIndex.get(call.index) ?? { function: { arguments: '' } }
+        if (call.id) merged.id = call.id
+        if (call.function.name) merged.function.name = call.function.name
+        merged.function.arguments += call.function.arguments ?? ''
+        byIndex.set(call.index, merged)
+      }
+      calls = [...byIndex.values()]
+    } else {
+      calls = JSON.parse(response.text).choices[0].message.tool_calls
+    }
+    expect(calls).toHaveLength(2)
+    expect(calls[0]).toMatchObject({ id: 'call_skill', function: { name: 'skill', arguments: '{"name":"upgrade-pgy-task-fleet"}' } })
+    expect(calls[1]).toMatchObject({ id: 'call_bash', function: { name: 'bash', arguments: '{"command":"pwd"}' } })
+  })
+
   it('surfaces an upstream failure as a status, not an empty 200', async () => {
     const failing: ChannelLaneLlm = {
       listModels: async () => [{ id: 'M' }],

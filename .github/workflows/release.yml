@@ -42,8 +42,8 @@ jobs:
       # `pnpm install`（不带我们的命令行参数）。那个自动 install 会重新解析
       # 版本范围，进而撞上 @deepseek-ai/dsh-* 预发布版的
       # ERR_PNPM_NO_MATCHING_VERSION。用环境变量把配置喂给所有子进程，
-      # 自动 install 才会和上面那次显式 install 用同一套设置。
-      npm_config_auto_install_peers: 'false'
+      # 自动 install 才会和锁文件的 autoInstallPeers=true 一致。
+      npm_config_auto_install_peers: 'true'
       npm_config_registry: 'https://registry.npmjs.org'
     steps:
       - name: Checkout
@@ -67,13 +67,13 @@ jobs:
         # 并不匹配预发布版。只有严格照 lockfile 装才不触发那次解析；放开
         # （--no-frozen-lockfile）就报 ERR_PNPM_NO_MATCHING_VERSION。
         #
-        # --config.auto-install-peers=false 必须显式传：lockfile 记的
-        # settings.autoInstallPeers=false 要与之一致，否则报
+        # --config.auto-install-peers=true 必须显式传：lockfile 记的
+        # settings.autoInstallPeers=true 要与之一致，否则报
         # ERR_PNPM_LOCKFILE_CONFIG_MISMATCH。
         run: |
           pnpm install --frozen-lockfile \
             --registry=https://registry.npmjs.org \
-            --config.auto-install-peers=false
+            --config.auto-install-peers=true
       - name: Show resolved toolchain
         # 失败时先看得到环境，避免把依赖问题误判成别的
         run: |

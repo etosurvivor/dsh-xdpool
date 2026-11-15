@@ -36,6 +36,7 @@
  */
 import type { AggregateModelRow } from './aggregate.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
+import { channelMemberOf, flattenMember } from './member-id.ts'
 import { isProviderId, parseProviderModelId } from './providers.ts'
 import { CHAIN_REASONING_EFFORTS } from './reasoning.ts'
 /** Id prefix every combo row advertises under. */
@@ -116,7 +117,7 @@ export function flattenPlatforms(platforms: readonly ComboPlatform[]): string[] 
       if (model === '' || isComboId(model)) continue
       // Derived here rather than stored, so a platform's models never carry a
       // prefix that could disagree with its owner.
-      const id = owner === POOL_OWNER ? model : `${owner}/${model}`
+      const id = flattenMember(owner, model)
       if (seen.has(id)) continue
       seen.add(id)
       out.push(id)
@@ -138,9 +139,10 @@ export function splitPlatforms(models: readonly string[]): ComboPlatform[] {
   for (const raw of models) {
     const id = text(raw)
     if (id === '') continue
-    const parsed = parseProviderModelId(id)
-    const owner = parsed === null ? POOL_OWNER : parsed.providerId
-    const model = parsed === null ? id : parsed.modelId
+    const channel = channelMemberOf(id)
+    const parsed = channel === undefined ? parseProviderModelId(id) : null
+    const owner = channel?.channel ?? (parsed === null ? POOL_OWNER : parsed.providerId)
+    const model = channel?.model ?? (parsed === null ? id : parsed.modelId)
     let bucket = groups.get(owner)
     if (bucket === undefined) {
       bucket = []

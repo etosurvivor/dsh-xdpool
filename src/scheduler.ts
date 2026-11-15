@@ -114,6 +114,24 @@ const EVENT_CHAIN_BUILDERS: Readonly<Record<string, true>> = {
 
 export const AUTOMATION_TICK_MS = 60_000
 
+/**
+ * How long after {@link WorkBuddyScheduler.start} the second kick runs.
+ *
+ * Long enough for the pool's first account scan to have produced credentials,
+ * short enough that a user watching the card sees the jobs land right away.
+ */
+export const AUTOMATION_START_SETTLE_MS = 5_000
+
+/**
+ * How long after {@link WorkBuddyScheduler.start} an extra startup pass may run.
+ * This pass never consumes a future scheduled slot.
+ *
+ * Long enough to cover a slow first account scan plus the six jobs running one
+ * after another, short enough that an app left open all day resumes its normal
+ * schedule well before the next configured hour.
+ */
+export const AUTOMATION_STARTUP_CATCHUP_MS = 120_000
+
 /** Which jobs the automation runs, and when. */
 /**
  * The persisted daily earnings ledger.
@@ -583,6 +601,20 @@ export class WorkBuddyScheduler {
 
   private timer: NodeJS.Timeout | undefined
 
+  /** The one-shot kick scheduled just after `start`; cleared by `stop`. */
+  private settleTimer: NodeJS.Timeout | undefined
+
+  /**
+   * Deadline for the start-of-day window described in {@link dueSlot}.
+   *
+   * Zero until {@link start} sets it, so a manual `tick` before the loop starts
+   * keeps the original "only past hours" behaviour.
+   */
+  private startupCatchUpUntilMs = 0
+
+  /** A startup pass is extra work; it never spends a future scheduled slot. */
+  private readonly startupCompleted = new Set<JobKind>()
+
   private running = false
 
   /** Guards against a slow run overlapping the next tick. */
@@ -751,6 +783,27 @@ export class WorkBuddyScheduler {
     if (this.timer !== undefined) return
     this.stopped = false
     this.running = true
+    /**
+     * Launching DSH is itself a "run today's jobs" signal.
+     *
+     * `setInterval` alone delays the first pass by a whole tick, so an app
+     * started at 17:57 ran every catch-up job at 17:58 and the card showed all
+     * six stamped on the same minute — indistinguishable from "nothing happened
+     * until I moved". Kicking the loop now, and once more shortly after, makes
+     * "I started DSH" and "the automation started" the same moment.
+     *
+     * During this window, unrun jobs receive one extra startup pass. Past due
+     * slots are consumed as normal; future slots remain scheduled.
+     *
+     * Both kicks are cheap no-ops when the pool has no accounts yet or the day
+     * is already done: `tick` returns early on an empty pool, and `dueSlot`
+     * finds nothing left to consume.
+     */
+    this.startupCompleted.clear()
+    this.startupCatchUpUntilMs = this.now().getTime() + AUTOMATION_STARTUP_CATCHUP_MS
+    void this.tick()
+    this.settleTimer = setTimeout(() => { void this.tick() }, AUTOMATION_START_SETTLE_MS)
+    this.settleTimer.unref?.()
     // Unref so the plugin never keeps a host process alive on its own.
     this.timer = setInterval(() => { void this.tick() }, AUTOMATION_TICK_MS)
     this.timer.unref?.()
@@ -760,6 +813,10 @@ export class WorkBuddyScheduler {
   stop(): void {
     this.stopped = true
     this.running = false
+    if (this.settleTimer !== undefined) {
+      clearTimeout(this.settleTimer)
+      this.settleTimer = undefined
+    }
     if (this.timer !== undefined) {
       clearInterval(this.timer)
       this.timer = undefined
@@ -915,6 +972,8 @@ export class WorkBuddyScheduler {
    * PASSED and its slot is still unconsumed, so a laptop that slept through
    * 10:00 still runs the job when it wakes, on the same day.
    *
+   * Startup runs are handled separately in tick and do not spend a future slot.
+   *
    * The EARLIEST unconsumed candidate wins, which is what keeps a two-hour job
    * (`travelHours: [9, 21]`) whole: consuming the earliest due slot leaves the
    * later one for its own hour.
@@ -958,6 +1017,19 @@ export class WorkBuddyScheduler {
 
   private async tick(): Promise<void> {
     if (!this.enabled || this.stopped || this.busy) return
+    /**
+     * Never spend a slot on an empty pool.
+     *
+     * The kick {@link start} fires runs within milliseconds of load, which in
+     * some launches lands BEFORE the pool's first credential scan (measured: all
+     * six jobs reported "0 accounts ok" while the card already listed two
+     * accounts). `runJob` treats "0 eligible accounts" as a successful pass, so
+     * the slot was marked consumed and the day's jobs never ran again — the
+     * opposite of what the kick is for. Returning before the ledger is touched
+     * leaves the slot unconsumed, so the settle kick and the regular timer pick
+     * the work up as soon as the pool is ready.
+     */
+    if (this.pool.list().length === 0) return
     this.busy = true
     try {
       const now = this.now()
@@ -978,8 +1050,10 @@ export class WorkBuddyScheduler {
         // schedule self-heal on the next tick, which is what a laptop that
         // slept through the hour needs.
         const consumed = this.dueSlot(kind, now)
-        if (consumed === undefined) continue
-        await this.runJob(kind, today, consumed)
+        const startup = consumed === undefined && now.getTime() <= this.startupCatchUpUntilMs && !this.startupCompleted.has(kind)
+        if (consumed === undefined && !startup) continue
+        const ran = await this.runJob(kind, today, consumed, startup)
+        if (ran) this.startupCompleted.add(kind)
       }
     } catch (error: unknown) {
       // A defect in the loop itself must not kill the timer.
@@ -1118,7 +1192,7 @@ export class WorkBuddyScheduler {
    * while claiming wants the whole pool to have been lit up first. Splitting
    * them costs one shared wait instead of one wait per account.
    */
-  private async runJob(kind: JobKind, today: string, consumedSlot?: string): Promise<void> {
+  private async runJob(kind: JobKind, today: string, consumedSlot?: string, startup = false): Promise<boolean> {
     const accountWord = kind === 'report' ? 'report' : kind
     let ok = 0
     let failed = 0
@@ -1158,6 +1232,8 @@ export class WorkBuddyScheduler {
     }
 
     const accounts = this.accountsInOrder(kind)
+    // A global-only, disabled or cooling pool must not consume a CN-only slot.
+    if (accounts.length === 0 || this.stopped) return false
 
     // Pass 1 (tasks only): light up the client-scored tasks for EVERY account
     // before claiming any of them. Claiming inside this loop would find each
@@ -1291,7 +1367,7 @@ export class WorkBuddyScheduler {
     // never meant to consume — pressing "run now" at 10:35 must not cancel the
     // 21:00 cat trip.
     if (consumedSlot !== undefined) this.consumeSlot(kind, consumedSlot)
-    state.lastFiredHour = slotKey(this.now())
+    if (!startup) state.lastFiredHour = slotKey(this.now())
     state.lastRunDate = today
     state.lastRunAtMs = this.now().getTime()
     state.ok = ok
@@ -1316,6 +1392,7 @@ export class WorkBuddyScheduler {
     if (kind === 'tasks' || kind === 'checkin' || kind === 'streak' || kind === 'travel' || kind === 'compensation') {
       await this.flushEarnings()
     }
+    return true
   }
 
   /** Compose the one-line summary shown on the card. */

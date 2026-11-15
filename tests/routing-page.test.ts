@@ -133,7 +133,22 @@ describe('the page keeps the chain the user typed', () => {
     // the wrong platform card.
     const { draftOf } = await import('../src/client/RoutingPage.tsx')
     const draft = draftOf({ id: 'combo:test', name: 'test', models: [], platforms: [], missing: ['codearts/model-a', 'trae:model-b'], strategy: 'fallback', stickyLimit: 1, enabled: true, contextWindow: 131072, supportsImages: false })
-    expect(draft.platforms).toEqual([{ owner: 'codearts', models: ['model-a'] }, { owner: 'trae', models: ['model-b'] }])
+    expect(draft.platforms).toEqual([{ owner: 'codearts', models: ['model-a'] }, { owner: 'trae', models: ['trae:model-b'] }])
+  })
+  it('round-trips channel IDs with slashes and legacy duplicate prefixes', async () => {
+    const { splitPlatforms, flattenPlatforms } = await import('../src/combos.ts')
+    const { draftOf, flattenDraft } = await import('../src/client/RoutingPage.tsx')
+    const models = ['trae:deepseek-v4.1-flash', 'cline:deepseek/deepseek-v4.1-flash-1017:batch', 'openai/gpt-4']
+    const platforms = splitPlatforms(models)
+    expect(platforms).toEqual([
+      { owner: 'trae', models: [models[0]] },
+      { owner: 'cline', models: [models[1]] },
+      { owner: 'openai', models: ['gpt-4'] },
+    ])
+    expect(flattenPlatforms(platforms)).toEqual(models)
+    expect(flattenDraft(platforms.map(p => ({ owner: p.owner, models: [...p.models] })))).toEqual(models)
+    const draft = draftOf({ id: 'combo:test', name: 'test', models: [], platforms: [{ owner: 'trae', models: ['trae/trae:deepseek-v4.1-flash'] }], missing: ['cline:deepseek/deepseek-v4.1-flash-1017:batch'], strategy: 'fallback', stickyLimit: 1, enabled: true, contextWindow: 131072, supportsImages: false })
+    expect(flattenDraft(draft.platforms)).toEqual(models.slice(0, 2))
   })
   it('reports an unresolved member rather than hiding it', () => {
     expect(page).toContain('route.missing')

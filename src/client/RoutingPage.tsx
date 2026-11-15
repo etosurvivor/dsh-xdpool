@@ -22,6 +22,7 @@
  *
  * @module dsh-xdpool/client/RoutingPage
  */
+import { channelMemberOf, flattenMember, memberForOwner } from '../member-id.ts'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   POOL_COMBOS_PATH,
@@ -90,18 +91,12 @@ interface ChainDraft {
  * a fallback that never happened. A pool model is its bare id; anything else is
  * `owner/model`, the same composite id the aggregate catalog publishes.
  */
-function bareForOwner(owner: string, model: string): string {
-  if (owner === 'workbuddy') return model
-  while (model.startsWith(`${owner}/`) || model.startsWith(`${owner}:`)) model = model.slice(owner.length + 1)
-  return model
-}
 export function flattenDraft(platforms: ChainDraft['platforms']): string[] {
   const out: string[] = []
   const seen = new Set<string>()
   for (const platform of platforms) {
     for (const model of platform.models) {
-      const bare = bareForOwner(platform.owner, model)
-      const id = platform.owner === 'workbuddy' ? bare : `${platform.owner}/${bare}`
+      const id = flattenMember(platform.owner, model)
       if (seen.has(id)) continue
       seen.add(id)
       out.push(id)
@@ -131,17 +126,16 @@ export function draftOf(combo: PoolWebCombo): ChainDraft {
     .map(group => {
       const owner = typeof group.owner === 'string' ? group.owner : 'workbuddy'
       return { owner, models: Array.isArray(group.models)
-        ? [...new Set((group.models as unknown[]).filter((model): model is string => typeof model === 'string').map(model => bareForOwner(owner, model)))]
+        ? [...new Set((group.models as unknown[]).filter((model): model is string => typeof model === 'string').map(model => memberForOwner(owner, model)))]
         : [] }
     })
   const known = new Set(Array.isArray(combo.models) ? combo.models : [])
   for (const modelId of Array.isArray(combo.missing) ? combo.missing : []) {
     if (known.has(modelId)) continue
+    const channel = channelMemberOf(modelId)
     const slash = modelId.indexOf('/')
-    const colon = modelId.indexOf(':')
-    const separator = slash === -1 ? colon : colon === -1 ? slash : Math.min(slash, colon)
-    const owner = separator === -1 ? 'workbuddy' : modelId.slice(0, separator)
-    const model = bareForOwner(owner, separator === -1 ? modelId : modelId.slice(separator + 1))
+    const owner = channel?.channel ?? (slash === -1 ? 'workbuddy' : modelId.slice(0, slash))
+    const model = channel?.model ?? memberForOwner(owner, slash === -1 ? modelId : modelId.slice(slash + 1))
     const group = platforms.find(entry => entry.owner === owner)
     if (group === undefined) platforms.push({ owner, models: [model] })
     else if (!group.models.includes(model)) group.models.push(model)
@@ -725,7 +719,7 @@ function ChainEditor({
                     ? <p className="dsm-xdpool-rt-hint">{t?.('route.platformNoModels') ?? 'No model added to this platform yet.'}</p>
                     : <ol className="dsm-xdpool-rt-members">
                         {platform.models.map((model, modelIndex) => {
-                          const fullId = platform.owner === 'workbuddy' ? model : `${platform.owner}/${model}`
+                          const fullId = flattenMember(platform.owner, model)
                           const candidate = candidateById.get(fullId)
                           return (
                             <li className="dsm-xdpool-rt-member" key={`${model}-${modelIndex}`}>

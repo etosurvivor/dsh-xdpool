@@ -326,7 +326,7 @@ export function CreditDot({ t }: { readonly t?: Translate | undefined }): ReactE
     return () => { observer.disconnect() }
   }, [])
 
-  /** Keep body-relative panel and viewport-relative anchor in the same coordinate space. */
+  /** Keep the anchor and fixed panel in layout-viewport CSS coordinates. */
   useLayoutEffect(() => {
     if (!open) { setPos(undefined); return }
     const anchor = anchorRef.current
@@ -336,10 +336,14 @@ export function CreditDot({ t }: { readonly t?: Translate | undefined }): ReactE
     const update = (): void => {
       frame = undefined
       const box = anchor.getBoundingClientRect()
-      const panelBox = panel.getBoundingClientRect()
-      const { left, top } = creditPanelPosition(box, panelBox, {
-        width: window.innerWidth, height: window.innerHeight,
-      })
+      // offset sizes are independent of animated transforms.
+      const panelBox = { width: panel.offsetWidth, height: panel.offsetHeight }
+      // The visual viewport can be offset within the layout viewport while zoomed.
+      const vv = window.visualViewport
+      const viewport = vv === null || vv === undefined
+        ? { width: window.innerWidth, height: window.innerHeight }
+        : { width: vv.width, height: vv.height, left: vv.offsetLeft, top: vv.offsetTop }
+      const { left, top } = creditPanelPosition(box, panelBox, viewport)
       setPos(current => current?.top === top && current.left === left ? current : { top, left })
     }
     const schedule = (): void => {
@@ -351,10 +355,14 @@ export function CreditDot({ t }: { readonly t?: Translate | undefined }): ReactE
     observer?.observe(panel)
     window.addEventListener('resize', schedule)
     window.addEventListener('scroll', schedule, true)
+    window.visualViewport?.addEventListener('resize', schedule)
+    window.visualViewport?.addEventListener('scroll', schedule)
     return () => {
       observer?.disconnect()
       window.removeEventListener('resize', schedule)
       window.removeEventListener('scroll', schedule, true)
+      window.visualViewport?.removeEventListener('resize', schedule)
+      window.visualViewport?.removeEventListener('scroll', schedule)
       if (frame !== undefined) window.cancelAnimationFrame(frame)
     }
   }, [open, snapshot?.model, snapshot?.channel?.total, snapshot?.spentToday])

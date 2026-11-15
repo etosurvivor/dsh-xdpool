@@ -193,7 +193,7 @@ export function combosStatusOf(
      * image support come from resolved model metadata, with conservative fallback.
      */
     ...hostRows.map(row => ({
-      id: `${row.channel}/${row.modelId}`,
+      id: row.id,
       name: row.name,
       owner: row.channel,
       usable: true,
@@ -204,10 +204,7 @@ export function combosStatusOf(
     })),
   ]
   const sources = { pool: poolRows, aggregate: providerRows, host: hostRows }
-  const displayId = (id: string): string => {
-    const host = hostRows.find(row => row.id === id)
-    return host === undefined ? id : `${host.channel}/${host.modelId}`
-  }
+  const displayId = (id: string): string => id
   return {
     combos: chains.map(chain => {
       // Keep disabled chains editable without losing their configured members.

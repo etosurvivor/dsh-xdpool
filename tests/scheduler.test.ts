@@ -17,7 +17,7 @@ import { readFileSync } from 'node:fs'
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { WorkBuddyAccountPool } from '../src/accounts.ts'
 import type { WorkBuddyCredential } from '../src/accounts.ts'
 import { AUTOMATION_JOB_KINDS, WorkBuddyScheduler, dayKey, isFireHour, slotKey } from '../src/scheduler.ts'
@@ -715,6 +715,47 @@ describe('scheduler runs', () => {
   })
 })
 
+
+describe('startup automation', () => {
+  it('runs immediately but keeps future slots for their configured hour', async () => {
+    const { pool, upstream } = await harness(1)
+    let now = beijing(2026, 8, 7, 8, 0)
+    const scheduler = new WorkBuddyScheduler(pool, upstream.client, {
+      enabled: true, accountDelayMs: 0, eventScoreWaitMs: 0, expertGapMs: 0,
+      now: () => now, logger: { info() {}, warn() {} },
+    })
+    scheduler.start()
+    try {
+      await vi.waitFor(() => expect(upstream.calls).toContain('compensationStatus'))
+      expect(scheduler.status().jobs.compensation.firedSlots ?? []).toEqual([])
+      const before = upstream.calls.filter(c => c === 'compensationStatus').length
+      now = beijing(2026, 8, 7, 13, 0)
+      await (scheduler as unknown as { tick(): Promise<void> }).tick()
+      expect(upstream.calls.filter(c => c === 'compensationStatus')).toHaveLength(before + 1)
+      expect(scheduler.status().jobs.compensation.firedSlots).toContain('2026-09-07T13')
+    } finally { scheduler.stop() }
+  })
+
+  it('does not consume CN-only slots when only a global account is available', async () => {
+    const { pool, upstream } = await harness(1, { domain: 'workbuddy.ai' })
+    const now = beijing(2026, 8, 7, 11, 0)
+    const scheduler = new WorkBuddyScheduler(pool, upstream.client, {
+      enabled: true, taskHours: [11], accountDelayMs: 0, eventScoreWaitMs: 0,
+      now: () => now, logger: { info() {}, warn() {} },
+    })
+    await (scheduler as unknown as { tick(): Promise<void> }).tick()
+    expect(scheduler.status().jobs.tasks.firedSlots ?? []).toEqual([])
+    expect(scheduler.status().jobs.tasks.lastFiredHour).toBeUndefined()
+  })
+
+  it('does not consume slots while the pool is empty', async () => {
+    const { pool, upstream } = await harness(0)
+    const now = beijing(2026, 8, 7, 11, 0)
+    const scheduler = new WorkBuddyScheduler(pool, upstream.client, { enabled: true, now: () => now })
+    await (scheduler as unknown as { tick(): Promise<void> }).tick()
+    for (const job of AUTOMATION_JOB_KINDS) expect(scheduler.status().jobs[job].firedSlots ?? []).toEqual([])
+  })
+})
 
 describe('scheduler account gating', () => {
   async function tickAt(scheduler: WorkBuddyScheduler, when: Date): Promise<void> {

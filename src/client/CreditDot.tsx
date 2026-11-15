@@ -326,22 +326,7 @@ export function CreditDot({ t }: { readonly t?: Translate | undefined }): ReactE
     return () => { observer.disconnect() }
   }, [])
 
-  /**
-   * Keep the panel glued to its trigger.
-   *
-   * The panel is portaled to `document.body` and positioned `fixed`, so its
-   * `top`/`left` are measured against the VISUAL viewport. `window.innerWidth`
-   * is the LAYOUT viewport, and the two differ whenever the page is zoomed —
-   * `visualViewport.width * scale === window.innerWidth` at scale > 1. Under a
-   * Windows display scale of 125% / 150% that mismatch is what parked the panel
-   * in the window's bottom-right corner instead of above the dot: the clamp
-   * against `window.innerWidth` allowed an `left` far past the visible edge.
-   *
-   * Taking the size and the offset from `visualViewport` puts the arithmetic in
-   * the same space the `fixed` origin uses, so the panel lines up at any scale.
-   * `offsetWidth` / `offsetHeight` are still used for the panel size: its rect
-   * already reflects the applied `pos`, and re-reading it would drift.
-   */
+  /** Keep the anchor and fixed panel in layout-viewport CSS coordinates. */
   useLayoutEffect(() => {
     if (!open) { setPos(undefined); return }
     const anchor = anchorRef.current
@@ -351,17 +336,13 @@ export function CreditDot({ t }: { readonly t?: Translate | undefined }): ReactE
     const update = (): void => {
       frame = undefined
       const box = anchor.getBoundingClientRect()
-      // Size only: the panel's rect origin already reflects the applied `pos`,
-      // so only width/height are meaningful here.
+      // offset sizes are independent of animated transforms.
       const panelBox = { width: panel.offsetWidth, height: panel.offsetHeight }
-      // `visualViewport` reports the VISIBLE region in CSS pixels, which is the
-      // space a `fixed` element is positioned in. The layout viewport
-      // (`window.innerWidth`) is larger whenever the page is zoomed, and that
-      // mismatch is what put the panel in the corner under Windows scaling.
+      // The visual viewport can be offset within the layout viewport while zoomed.
       const vv = window.visualViewport
       const viewport = vv === null || vv === undefined
         ? { width: window.innerWidth, height: window.innerHeight }
-        : { width: vv.width, height: vv.height }
+        : { width: vv.width, height: vv.height, left: vv.offsetLeft, top: vv.offsetTop }
       const { left, top } = creditPanelPosition(box, panelBox, viewport)
       setPos(current => current?.top === top && current.left === left ? current : { top, left })
     }
@@ -374,10 +355,14 @@ export function CreditDot({ t }: { readonly t?: Translate | undefined }): ReactE
     observer?.observe(panel)
     window.addEventListener('resize', schedule)
     window.addEventListener('scroll', schedule, true)
+    window.visualViewport?.addEventListener('resize', schedule)
+    window.visualViewport?.addEventListener('scroll', schedule)
     return () => {
       observer?.disconnect()
       window.removeEventListener('resize', schedule)
       window.removeEventListener('scroll', schedule, true)
+      window.visualViewport?.removeEventListener('resize', schedule)
+      window.visualViewport?.removeEventListener('scroll', schedule)
       if (frame !== undefined) window.cancelAnimationFrame(frame)
     }
   }, [open, snapshot?.model, snapshot?.channel?.total, snapshot?.spentToday])

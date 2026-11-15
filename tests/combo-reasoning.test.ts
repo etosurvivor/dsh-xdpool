@@ -162,15 +162,15 @@ describe('saved route status compatibility', () => {
     const store = { version: 1 as const, combos: [{ name: 'test', models: ['codearts/codearts:deepseek-v4.1-flash', 'codearts:deepseek-v4.1-flash', 'codearts/missing'] }] }
     const catalog = new AggregateCatalog(() => store, () => [], () => host); await catalog.refresh()
     const status = combosStatusOf(store, catalog, [], host)
-    expect(status.candidates.map(row => row.id)).toContain('codearts/deepseek-v4.1-flash')
-    expect(status.combos[0]?.models).toEqual(['codearts/deepseek-v4.1-flash'])
+    expect(status.candidates.map(row => row.id)).toContain('codearts:deepseek-v4.1-flash')
+    expect(status.combos[0]?.models).toEqual(['codearts:deepseek-v4.1-flash'])
     expect(status.combos[0]?.missing).toEqual(['codearts/missing'])
-    expect(status.combos[0]?.platforms).toEqual([{ owner: 'codearts', models: ['deepseek-v4.1-flash'] }])
+    expect(status.combos[0]?.platforms).toEqual([{ owner: 'codearts', models: ['codearts:deepseek-v4.1-flash'] }])
     expect(status.combos[0]?.supportsImages).toBe(true)
     const disabled = { ...store, combos: [{ ...store.combos[0]!, enabled: false }] }
     const disabledRow = combosStatusOf(disabled, catalog, [], host).combos[0]
     expect(disabledRow?.enabled).toBe(false)
-    expect(disabledRow?.models).toEqual(['codearts/deepseek-v4.1-flash'])
+    expect(disabledRow?.models).toEqual(['codearts:deepseek-v4.1-flash'])
   })
 })
 
@@ -179,9 +179,9 @@ describe('route editor legacy restoration', () => {
     const { draftOf, flattenDraft } = await import('../src/client/RoutingPage.tsx')
     const initial = { id: 'combo:test', name: 'test', models: [], platforms: [], missing: ['codearts/codearts:deepseek-v4.1-flash', 'trae:deepseek-v4.1-flash'], strategy: 'fallback' as const, stickyLimit: 1, enabled: true, contextWindow: 1000, supportsImages: false }
     const draft = draftOf(initial)
-    expect(draft.platforms).toEqual([{ owner: 'codearts', models: ['deepseek-v4.1-flash'] }, { owner: 'trae', models: ['deepseek-v4.1-flash'] }])
+    expect(draft.platforms).toEqual([{ owner: 'codearts', models: ['codearts:deepseek-v4.1-flash'] }, { owner: 'trae', models: ['trae:deepseek-v4.1-flash'] }])
     const saved = flattenDraft(draft.platforms)
-    expect(saved).toEqual(['codearts/deepseek-v4.1-flash', 'trae/deepseek-v4.1-flash'])
+    expect(saved).toEqual(['codearts:deepseek-v4.1-flash', 'trae:deepseek-v4.1-flash'])
     expect(flattenDraft(draftOf({ ...initial, models: saved, platforms: draft.platforms, missing: [] }).platforms)).toEqual(saved)
   })
 })

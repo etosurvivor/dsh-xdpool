@@ -10,19 +10,21 @@ export interface CreditPanelRect {
 export function creditPanelPosition(
   anchor: CreditPanelRect,
   panel: { width: number; height: number },
-  viewport: { width: number; height: number },
+  viewport: { width: number; height: number; left?: number; top?: number },
 ): { left: number; top: number } {
   const margin = 8
+  const minLeft = (viewport.left ?? 0) + margin
+  const minTop = (viewport.top ?? 0) + margin
   const left = Math.min(
-    Math.max(margin, anchor.left + anchor.width / 2 - panel.width / 2),
-    Math.max(margin, viewport.width - panel.width - margin),
+    Math.max(minLeft, anchor.left + anchor.width / 2 - panel.width / 2),
+    Math.max(minLeft, (viewport.left ?? 0) + viewport.width - panel.width - margin),
   )
   const above = anchor.top - panel.height - margin
   const below = anchor.bottom + margin
-  const preferAbove = above >= margin || anchor.top >= viewport.height - anchor.bottom
+  const preferAbove = above >= minTop || anchor.top - (viewport.top ?? 0) >= (viewport.top ?? 0) + viewport.height - anchor.bottom
   const top = Math.min(
-    Math.max(margin, preferAbove ? above : below),
-    Math.max(margin, viewport.height - panel.height - margin),
+    Math.max(minTop, preferAbove ? above : below),
+    Math.max(minTop, (viewport.top ?? 0) + viewport.height - panel.height - margin),
   )
   return { top, left }
 }

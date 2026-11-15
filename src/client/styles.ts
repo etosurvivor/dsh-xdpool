@@ -1525,8 +1525,8 @@ export const CREDIT_DOT_CSS = `
    panel laid out downward would be clipped.
 
    fixed is required, not incidental: the panel is portaled to document.body, so it has
-   no dot wrapper to anchor to. Its placement is measured against visualViewport
-   (see CreditDot.tsx) so it stays correct under Windows display scaling. */
+   no dot wrapper to anchor to. Placement accounts for visual viewport offsets
+   when a zoomed viewport is smaller than the layout viewport. */
 .dsm-xdpool-dotpanel{position:fixed;z-index:80;box-sizing:border-box;width:max-content;min-width:min(172px,calc(100vw - 16px));max-width:min(280px,calc(100vw - 16px));max-height:calc(100vh - 16px);overflow-y:auto;display:flex;flex-direction:column;gap:7px;padding:10px 12px 11px;border-radius:14px;border:1px solid color-mix(in srgb, var(--dsw-alias-border-l2,#ffffff1f) 92%, transparent);background:var(--dsw-alias-bg-layer-2,#1c1e22);box-shadow:0 18px 48px rgb(0 0 0 / 44%),0 3px 10px rgb(0 0 0 / 24%),inset 0 1px 0 rgb(255 255 255 / 7%);animation:dsm-xdpool-dotpanel-in .16s cubic-bezier(.16,1,.3,1)}
 @keyframes dsm-xdpool-dotpanel-in{from{opacity:0}to{opacity:1}}
 .dsm-xdpool-dotpanel-head{display:flex;align-items:center;gap:8px;min-width:0}

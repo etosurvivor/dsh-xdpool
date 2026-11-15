@@ -123,8 +123,8 @@ export const AUTOMATION_TICK_MS = 60_000
 export const AUTOMATION_START_SETTLE_MS = 5_000
 
 /**
- * How long after {@link WorkBuddyScheduler.start} every unconsumed slot of today
- * counts as due.
+ * How long after {@link WorkBuddyScheduler.start} an extra startup pass may run.
+ * This pass never consumes a future scheduled slot.
  *
  * Long enough to cover a slow first account scan plus the six jobs running one
  * after another, short enough that an app left open all day resumes its normal
@@ -612,6 +612,9 @@ export class WorkBuddyScheduler {
    */
   private startupCatchUpUntilMs = 0
 
+  /** A startup pass is extra work; it never spends a future scheduled slot. */
+  private readonly startupCompleted = new Set<JobKind>()
+
   private running = false
 
   /** Guards against a slow run overlapping the next tick. */
@@ -789,15 +792,14 @@ export class WorkBuddyScheduler {
      * until I moved". Kicking the loop now, and once more shortly after, makes
      * "I started DSH" and "the automation started" the same moment.
      *
-     * The window opened here is what {@link dueSlot} reads: inside it, every
-     * slot of today that has not been consumed counts as due, so an off-hour
-     * launch (08:00, before the first configured hour) still runs today's jobs
-     * instead of idling until 09:00.
+     * During this window, unrun jobs receive one extra startup pass. Past due
+     * slots are consumed as normal; future slots remain scheduled.
      *
      * Both kicks are cheap no-ops when the pool has no accounts yet or the day
      * is already done: `tick` returns early on an empty pool, and `dueSlot`
      * finds nothing left to consume.
      */
+    this.startupCompleted.clear()
     this.startupCatchUpUntilMs = this.now().getTime() + AUTOMATION_STARTUP_CATCHUP_MS
     void this.tick()
     this.settleTimer = setTimeout(() => { void this.tick() }, AUTOMATION_START_SETTLE_MS)
@@ -970,12 +972,7 @@ export class WorkBuddyScheduler {
    * PASSED and its slot is still unconsumed, so a laptop that slept through
    * 10:00 still runs the job when it wakes, on the same day.
    *
-   * START-OF-DAY semantics are the other half of the same idea. "Passed" alone
-   * means a DSH started at 08:00 does NOTHING until the first configured hour
-   * (09:00), even though the user just launched the app expecting today's jobs
-   * to run. Inside the window `start` opens, every slot of today that has not
-   * been consumed is due now; after it the original rule returns, so an
-   * unattended session never fires a 21:00 job at 09:30.
+   * Startup runs are handled separately in tick and do not spend a future slot.
    *
    * The EARLIEST unconsumed candidate wins, which is what keeps a two-hour job
    * (`travelHours: [9, 21]`) whole: consuming the earliest due slot leaves the
@@ -987,10 +984,9 @@ export class WorkBuddyScheduler {
     const current = Number(zonedParts(now).hour)
     const today = dayKey(now)
     const fired = this.firedSlotsOf(kind)
-    const catchUp = now.getTime() <= this.startupCatchUpUntilMs
     // Ordered by configured hour, so the first match is the earliest due one.
     for (const candidate of [...hours].sort((a, b) => a - b)) {
-      if (!catchUp && candidate > current) break
+      if (candidate > current) break
       const slot = `${today}T${String(candidate).padStart(2, '0')}`
       if (!fired.has(slot)) return slot
     }
@@ -1033,7 +1029,7 @@ export class WorkBuddyScheduler {
      * leaves the slot unconsumed, so the settle kick and the regular timer pick
      * the work up as soon as the pool is ready.
      */
-    if (this.accountsInOrder().length === 0) return
+    if (this.pool.list().length === 0) return
     this.busy = true
     try {
       const now = this.now()
@@ -1054,8 +1050,10 @@ export class WorkBuddyScheduler {
         // schedule self-heal on the next tick, which is what a laptop that
         // slept through the hour needs.
         const consumed = this.dueSlot(kind, now)
-        if (consumed === undefined) continue
-        await this.runJob(kind, today, consumed)
+        const startup = consumed === undefined && now.getTime() <= this.startupCatchUpUntilMs && !this.startupCompleted.has(kind)
+        if (consumed === undefined && !startup) continue
+        const ran = await this.runJob(kind, today, consumed, startup)
+        if (ran) this.startupCompleted.add(kind)
       }
     } catch (error: unknown) {
       // A defect in the loop itself must not kill the timer.
@@ -1194,7 +1192,7 @@ export class WorkBuddyScheduler {
    * while claiming wants the whole pool to have been lit up first. Splitting
    * them costs one shared wait instead of one wait per account.
    */
-  private async runJob(kind: JobKind, today: string, consumedSlot?: string): Promise<void> {
+  private async runJob(kind: JobKind, today: string, consumedSlot?: string, startup = false): Promise<boolean> {
     const accountWord = kind === 'report' ? 'report' : kind
     let ok = 0
     let failed = 0
@@ -1234,6 +1232,8 @@ export class WorkBuddyScheduler {
     }
 
     const accounts = this.accountsInOrder(kind)
+    // A global-only, disabled or cooling pool must not consume a CN-only slot.
+    if (accounts.length === 0 || this.stopped) return false
 
     // Pass 1 (tasks only): light up the client-scored tasks for EVERY account
     // before claiming any of them. Claiming inside this loop would find each
@@ -1367,7 +1367,7 @@ export class WorkBuddyScheduler {
     // never meant to consume — pressing "run now" at 10:35 must not cancel the
     // 21:00 cat trip.
     if (consumedSlot !== undefined) this.consumeSlot(kind, consumedSlot)
-    state.lastFiredHour = slotKey(this.now())
+    if (!startup) state.lastFiredHour = slotKey(this.now())
     state.lastRunDate = today
     state.lastRunAtMs = this.now().getTime()
     state.ok = ok
@@ -1392,6 +1392,7 @@ export class WorkBuddyScheduler {
     if (kind === 'tasks' || kind === 'checkin' || kind === 'streak' || kind === 'travel' || kind === 'compensation') {
       await this.flushEarnings()
     }
+    return true
   }
 
   /** Compose the one-line summary shown on the card. */

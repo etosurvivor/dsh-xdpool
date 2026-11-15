@@ -7,7 +7,7 @@
 ##   - pnpm 必须显式 version: '11'（package.json 没有 packageManager 字段）
 ##   - Node 24
 ##   - registry 必须显式指向官方 registry：本机 .npmrc 默认是淘宝镜像
-##   - 必须 --frozen-lockfile + --config.auto-install-peers=false：
+##   - 必须 --frozen-lockfile + --config.auto-install-peers=true：
 ##     @deepseek-ai/dsh-* 锁的是 0.1.x 预发布版，放开解析会 ERR_PNPM_NO_MATCHING_VERSION
 ##   - script 一律直接调 ./node_modules/.bin/*，不走 pnpm run：
 ##     pnpm 跑 script 前的自动 install 不带上面那些参数
@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # 这两个环境变量要喂给所有子进程，包括 pnpm 自己触发的自动 install
-      npm_config_auto_install_peers: 'false'
+      npm_config_auto_install_peers: 'true'
       npm_config_registry: 'https://registry.npmjs.org'
     steps:
       - name: Checkout
@@ -52,7 +52,7 @@ jobs:
         run: |
           pnpm install --frozen-lockfile \
             --registry=https://registry.npmjs.org \
-            --config.auto-install-peers=false
+            --config.auto-install-peers=true
       - name: Show resolved toolchain
         # 失败时先看得到环境，免得把依赖问题误判成代码问题
         run: |
@@ -61,16 +61,6 @@ jobs:
       - name: Typecheck (host)
         run: ./node_modules/.bin/tsc -p tsconfig.json --noEmit
       - name: Typecheck (client)
-        # ⚠ 这一步目前是**红**的，而且是既有的坏，不是谁这次改坏的：
-        # src/client 的 tsconfig 开了 exactOptionalPropertyTypes，被它 import
-        # 进来的 src/accounts.ts、src/context-budget.ts、src/free-upstream.ts
-        # 一共 6 处对不上。仓库从来没有在 CI 里跑过 `typecheck:client`，
-        # 所以这 6 处一直没人发现。
-        #
-        # 所以这里用 continue-on-error：CI 保持可用，同时每次 PR 都把这 6 处
-        # 重新打在日志里，不至于被忘掉。等它们修完，**删掉这一行**，
-        # 它就自动变成必须通过的检查。
-        continue-on-error: true
         run: ./node_modules/.bin/tsc -p tsconfig.client.json --noEmit
       - name: Build
         run: ./node_modules/.bin/tsdown

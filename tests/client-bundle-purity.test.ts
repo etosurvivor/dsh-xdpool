@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
+import { createRequire } from 'node:module'
 import { describe, expect, it } from 'vitest'
 
 describe('the browser bundle registers under its package name', () => {
@@ -18,6 +19,23 @@ describe('the browser bundle registers under its package name', () => {
     })
     expect([...registrations.keys()]).toEqual([name])
     expect(registrations.get(name)).toBeTypeOf('function')
+  })
+
+  it('executes the client factory using only host-provided browser modules', () => {
+    let factory: ((require: (id: string) => unknown) => unknown) | undefined
+    runInNewContext(readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8'), {
+      window: { __ModuleLoader__: { load(entry: { factory: typeof factory }) { factory = entry.factory } } },
+    })
+    expect(factory).toBeTypeOf('function')
+    const hostModules = new Set(['react', 'react/jsx-runtime', 'react-dom'])
+    const requireFromTest = createRequire(import.meta.url)
+    const requested: string[] = []
+    expect(() => factory!((id: string) => {
+      requested.push(id)
+      if (!hostModules.has(id)) throw new Error(`Unsupported browser module: ${id}`)
+      return requireFromTest(id)
+    })).not.toThrow()
+    expect(requested).toContain('react')
   })
 
   it('uses the host React DOM singleton for the credit panel portal', () => {

@@ -56,10 +56,14 @@ import {
 } from './channel-rpc.ts'
 import type { ChannelAccount, ChannelRpcEnvelope } from '../channels.ts'
 import { POOL_DOUBAO_QUOTA_PATH, POOL_DOUBAO_SESSION_PATH } from '../status-paths.ts'
-import { doubaoListing } from '../doubao-llm.ts'
 import type { PoolWebChannel, PoolWebChannelModel } from '../status-paths.ts'
 import type { XdPoolSettingsKey } from './locales.ts'
 
+// Client-safe catalogue: never import the Node-only Doubao transport into the UI bundle.
+const doubaoListing = (): readonly { id: string; name: string; description?: string }[] => [
+  { id: '0', name: '豆包 快速' },
+  { id: '3', name: '豆包 2.1 Turbo' },
+]
 type Translate = (key: XdPoolSettingsKey, params?: Record<string, unknown>) => string
 
 /**

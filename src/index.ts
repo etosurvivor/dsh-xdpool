@@ -8,6 +8,12 @@
 import { creditReservesWith } from './credit-reserve.ts'
 // 暂停豆包接入；保留源码，恢复时取消此处及 apply 中的注释。
 // import { installDoubaoWork } from './doubao-work-service.ts'
+import { DoubaoAdapter, DOUBAO_PROVIDER_ID } from './doubao-adapter.ts'
+const DOUBAO_LANE_CHANNEL = 'doubao'
+import { registerDoubaoRoutes } from './doubao-routes.ts'
+import { readStoredSession, removeStoredSession, writeStoredSession } from './doubao-store.ts'
+import { setDoubaoSession } from './doubao-upstream.ts'
+import type { DoubaoSession } from './doubao-auth.ts'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -1230,8 +1236,74 @@ function canonicalJson(value: unknown): string {
    * would offer the same models twice under two routes — and `buddy:` is already
    * the prefix the pool lane's own rows carry.
    */
+  /**
+   * The llm face the channel lane talks to, with Doubao served from here.
+   *
+   * `ctx.llm` owns every pack channel; Doubao has no pack adapter, so the two methods the
+   * lane needs are answered by this plugin for `doubao` and handed straight through for
+   * everything else. Composing rather than replacing keeps the host's registry authoritative
+   * for the channels it owns, which is what lets a channel the pack adds later appear without
+   * this file being touched.
+   */
+  /**
+   * The Doubao session, held in memory for the requests that read it.
+   *
+   * A module-scope-like holder rather than a local, because the lane and the routes are
+   * registered once and must see the CURRENT session — which changes the moment a sign-in
+   * lands. Restoring it from disk is what makes a restart keep the lane working.
+   */
+  /**
+   * The Doubao session.
+   *
+   * `undefined` until a sign-in lands or the stored one is restored. The lane reads it per
+   * call, so a sign-in that happens after startup is visible on the next request without a
+   * restart — and a rejection shows the "sign in again" sentence rather than an empty list.
+   */
+  let doubaoSession: DoubaoSession | undefined
+  let doubaoAdapterHandle: AdapterHandle | undefined
+  let doubaoSessionRevision = 0
+
+  /** Point every reader at a session: the lane, and the upstream's own holder. */
+  const adoptDoubaoSession = (session: DoubaoSession | undefined): void => {
+    doubaoSessionRevision += 1
+    doubaoSession = session
+    setDoubaoSession(session)
+    try { doubaoAdapterHandle?.replace([DOUBAO_PROVIDER_ID]) } catch { /* disposed during shutdown */ }
+  }
+
+  /**
+   * Restore the session written by an earlier run.
+   *
+   * Deliberately at apply time and deliberately not awaited: the plugin must not block its
+   * own start on a disk read, and a missing file is the ordinary "not signed in" state rather
+   * than a failure. `adoptDoubaoSession` publishes it as soon as it arrives, which is before
+   * any request can arrive.
+   */
+  const restoreRevision = doubaoSessionRevision
+  void readStoredSession().then((stored) => {
+    if (stored !== undefined && doubaoSessionRevision === restoreRevision) adoptDoubaoSession(stored)
+  })
+
+  const doubaoLlm = new DoubaoAdapter(() => doubaoSession)
+  const hostLlm = ctx.llm as unknown as ChannelLaneLlm
+  const channelLlm: ChannelLaneLlm = {
+    listModels: async (provider: string) =>
+      provider === DOUBAO_LANE_CHANNEL ? doubaoLlm.listModels() : hostLlm.listModels(provider),
+    ...(hostLlm.resolveModelInfo === undefined ? {} : { resolveModelInfo: (provider, model, signal) => provider === DOUBAO_LANE_CHANNEL
+      ? doubaoLlm.resolveModel(DOUBAO_PROVIDER_ID, model)
+      : hostLlm.resolveModelInfo!(provider, model, signal) }),
+    stream: (options: Record<string, unknown>) => (async function* (): AsyncIterable<Record<string, unknown>> {
+      // Dispatch by provider: numeric model ids can also exist in other channels.
+      const isDoubao = options['provider'] === DOUBAO_LANE_CHANNEL
+      if (isDoubao) {
+        yield* doubaoLlm.stream({ ...options, provider: DOUBAO_PROVIDER_ID } as unknown as Parameters<DoubaoAdapter['stream']>[0]) as AsyncIterable<Record<string, unknown>>
+        return
+      }
+      yield* hostLlm.stream(options)
+    })(),
+  }
   const channelLane = createChannelLane({
-    llm: ctx.llm as unknown as ChannelLaneLlm,
+    llm: channelLlm,
     onRows: async rows => {
       const snapshot = JSON.stringify(rows)
       if (snapshot === appliedHostRoster) return
@@ -1439,7 +1511,26 @@ function canonicalJson(value: unknown): string {
   // Same-origin routes backing the Heybash settings card. `webServer`
   // is an optional service: on a headless profile without it, no card routes
   // mount and the card shows an offline banner — the provider still works.
-  ctx.inject(['webServer'], (webCtx) => registerPoolStatusRoute(webCtx, {
+  ctx.inject(['webServer'], (webCtx) => {
+    /**
+     * Doubao's three routes.
+     *
+     * Its own lane, so its own endpoints: the sign-in harvests a cookie jar from a browser
+     * this process starts, and the quota reads the windows the account holds. Neither is
+     * something the pack can answer for a vendor it has no adapter for.
+     */
+    registerDoubaoRoutes(webCtx, {
+      session: () => doubaoSession,
+      save: (session) => {
+        adoptDoubaoSession(session)
+        void writeStoredSession(session)
+      },
+      clear: () => {
+        adoptDoubaoSession(undefined)
+        void removeStoredSession()
+      },
+    })
+    return registerPoolStatusRoute(webCtx, {
     pool: core.pool,
     onPoolChanged: () => invalidateCatalog(),
     catalogs: core.catalogs,
@@ -1838,7 +1929,8 @@ function canonicalJson(value: unknown): string {
       // the share list itself.
       return relayDocument()
     },
-  }))
+    })
+  })
   api = {
     ...core,
     shim,
@@ -2037,7 +2129,14 @@ function canonicalJson(value: unknown): string {
           releaseAdapterGlobal?.()
           releaseAdapterAggregate?.()
           releaseAdapterFree?.()
+          doubaoAdapterHandle?.()
+          doubaoAdapterHandle = undefined
           return
+        }
+        try {
+          doubaoAdapterHandle = ctx.llm.registerAdapter([DOUBAO_PROVIDER_ID], doubaoLlm)
+        } catch (error: unknown) {
+          ctx.logger.error('heybash-xdpool: Doubao adapter registration failed', error)
         }
         try {
           // Both entries go in ONE call: the host mounts a single configuration
@@ -2151,6 +2250,8 @@ function canonicalJson(value: unknown): string {
           releaseAdapterGlobal?.()
           releaseAdapterAggregate?.()
           releaseAdapterFree?.()
+          doubaoAdapterHandle?.()
+          doubaoAdapterHandle = undefined
           releaseDirectory?.()
         }
         try {

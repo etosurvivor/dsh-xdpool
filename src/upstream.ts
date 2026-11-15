@@ -308,6 +308,40 @@ const SESSION_DEAD_MARKERS = [
 const ALREADY_CHECKIN_MARKERS = ['已签到', 'already']
 
 /**
+ * Markers for "the check-in activity is not running on this gateway".
+ *
+ * Distinct from {@link ALREADY_CHECKIN_MARKERS}: "already collected" means the
+ * account got its reward, while this means there is nothing to collect on that
+ * gateway at all. Both are no-ops rather than failures, but only the first is
+ * evidence the account is working.
+ *
+ * Measured on the international gateway (`www.workbuddy.ai`, 2026-11-10):
+ * `checkin-activity-status` answers 200 with `active: false`, and claiming
+ * answers HTTP 400 `{"code":10001,"msg":"签到活动未开启或已过期"}`. Neither `已签到`
+ * nor `already` matches that wording, so the scheduler used to record a healthy
+ * global account as a failed job — a per-account `failed: +1` on every run, for
+ * an activity the gateway simply does not run.
+ */
+const CHECKIN_UNAVAILABLE_MARKERS = [
+  '签到活动未开启',
+  '活动未开启',
+  '活动已过期',
+  'not active',
+  'activity is not open',
+]
+
+/**
+ * Whether a claim failure means "this gateway runs no check-in activity".
+ *
+ * Callers treat this as a skipped no-op: the job reached the upstream and
+ * correctly found nothing to collect, which is not an account fault.
+ */
+export function isCheckinUnavailable(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return CHECKIN_UNAVAILABLE_MARKERS.some(marker => message.includes(marker))
+}
+
+/**
  * Markers for "there is no compensation offer to collect".
  *
  * The offer is seasonal — an outage announcement opens one, and it closes on a
@@ -715,6 +749,7 @@ const SSE_SCAN_LIMIT = 1 << 20
 /** Server request ids look like `cmb-<32 hex>` or a bare 32 hex string. */
 const SERVER_ID_PATTERN = /"id"\s*:\s*"((?:cmb-)?[0-9a-f]{32})"/
 const DESKTOP_TASK_UA = 'WorkBuddy/5.5.6 WorkBuddy/5.5.6 CLI/2.137.1'
+const SKILL_SHARE_UA = 'WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0'
 
 /**
  * Derive a stable 36-hex device id from the account uid.
@@ -1147,6 +1182,13 @@ export interface WorkBuddyTravelState {
   dailyLimitReached: boolean
   /** Credits an arrived trip pays. */
   rewardCredit: number
+}
+
+/** A public marketplace skill that may be used to create a share link. */
+export interface ShareableSkill {
+  id: string
+  name: string
+  description: string
 }
 
 export interface WorkBuddyTask {
@@ -2028,9 +2070,16 @@ export class WorkBuddyUpstreamClient {
   async reportDesktopEvents(
     credential: WorkBuddyCredential,
     events: readonly Record<string, unknown>[],
+    identity?: 'skill-share',
   ): Promise<void> {
     if (events.length === 0) return
     const fingerprint = this.desktopFingerprint(credential)
+    if (identity === 'skill-share') Object.assign(fingerprint, {
+      ideVersion: '5.9.3', extVersion: '5.9.3',
+      releaseDate: 1793093056315, commit: 'd46924219e79332f49c37ccebf27292f87001b19',
+      qimei36: deriveDeviceId(credential, 'qimei'), osVersion: '10.0.28000',
+      cpuModel: '11th Gen Intel(R) Core(TM) i5-11320H @ 3.20GHz', cpuCores: 8, memorySize: 16,
+    })
     const body = events.map(event => ({ ...fingerprint, ...event }))
     const response = await this.fetchImpl(`${chatBase(credential)}${DESKTOP_REPORT_PATH}`, {
       method: 'POST',
@@ -2038,7 +2087,7 @@ export class WorkBuddyUpstreamClient {
         'Authorization': `Bearer ${credential.accessToken}`,
         'Accept': 'application/json, text/plain, */*',
         'Content-Type': 'application/json;charset=UTF-8',
-        'User-Agent': DESKTOP_TASK_UA,
+        'User-Agent': identity === 'skill-share' ? SKILL_SHARE_UA : DESKTOP_TASK_UA,
         'X-Product': 'SaaS',
         'X-Request-ID': deriveDeviceId(credential, 'req') + String(Date.now() % 1_000_000),
         ...credential.uid === undefined || credential.uid === '' ? {} : { 'X-User-Id': credential.uid },
@@ -2183,6 +2232,46 @@ export class WorkBuddyUpstreamClient {
       })
     }
     return out
+  }
+
+  /** Read public marketplace skills for the share-link task. */
+  async shareableSkills(credential: WorkBuddyCredential): Promise<readonly ShareableSkill[]> {
+    if (regionOf(credential.domain) !== 'cn') throw new Error('skill sharing is only available for domestic accounts')
+    const response = await this.fetchImpl('https://www.codebuddy.cn/v2/operation-platform/market/skill/list', {
+      method: 'POST', headers: { ...chatHeaders(credential), 'User-Agent': DESKTOP_TASK_UA },
+      body: JSON.stringify({ page: 1, page_size: 20 }), signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
+    })
+    const envelope = await readEnvelope(response)
+    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+    const rows = asRecord(envelope.data)['skills']
+    if (!Array.isArray(rows)) return []
+    return rows.flatMap(value => {
+      const row = asRecord(value)
+      const id = typeof row['skill_id'] === 'string' ? row['skill_id'] : typeof row['id'] === 'string' ? row['id'] : ''
+      const name = [row['display_name_zh'], row['name'], row['display_name_en']].find(v => typeof v === 'string' && v.trim() !== '')
+      const description = [row['description_zh'], row['description'], row['description_en']].find(v => typeof v === 'string' && v.trim() !== '')
+      return id.trim() === '' || typeof name !== 'string' ? [] : [{ id: id.trim(), name: name.trim(), description: typeof description === 'string' ? description.trim().slice(0, 60) : '' }]
+    })
+  }
+
+  /** Create a real link for a public marketplace skill. Never sends it to a person. */
+  async createSkillShareLink(credential: WorkBuddyCredential, skill: ShareableSkill): Promise<{ shareCode: string }> {
+    if (regionOf(credential.domain) !== 'cn' || !credential.uid || !skill.id || !skill.name) throw new Error('skill share requires a domestic account and a marketplace skill')
+    const response = await this.fetchImpl('https://open.workbuddy.cn/api/v2/open-platform/asset-shares/c2c/channels', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${credential.accessToken}`, 'X-User-Id': credential.uid, 'X-Domain': 'copilot.tencent.com', 'Content-Type': 'application/json', 'Accept': 'application/json, text/plain, */*', 'User-Agent': SKILL_SHARE_UA },
+      body: JSON.stringify({ asset_kind: 'skill', asset_source: 'market', asset_ref: JSON.stringify({ asset_id: skill.id }), ways: ['link'], extra: { name: skill.name, description: skill.description, shareKey: skill.id, marketplaceSource: 'builtin-market' } }),
+      signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
+    })
+    const envelope = await readEnvelope(response)
+    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+    const data = asRecord(envelope.data)
+    const shareCode = typeof data['share_code'] === 'string' ? data['share_code'].trim() : ''
+    const ways = Array.isArray(data['ways']) ? data['ways'] : []
+    const link = ways.map(asRecord).find(way => way['share_way'] === 'link')?.['resource_ref']
+    if (shareCode === '' || typeof link !== 'string' || link.trim() === '') throw new Error('skill share response has no share code or link')
+    // Do not log or expose the generated share link or code.
+    return { shareCode }
   }
 
   /**
@@ -2459,8 +2548,9 @@ export class WorkBuddyUpstreamClient {
    * is 400 "first_buddy task not completed yet". Callers treat that as "not yet"
    * rather than an error, which is why it is thrown as-is for them to classify.
    */
-  async buddyAdoptFirst(credential: WorkBuddyCredential): Promise<void> {
-    await this.growthJson(credential, 'POST', '/activity/growth/buddy/first', {})
+  async buddyAdoptFirst(credential: WorkBuddyCredential): Promise<{ credit: number; energy: number }> {
+    const data = await this.growthJson(credential, 'POST', '/activity/growth/buddy/first', {})
+    return { credit: numOf(data['credit']), energy: numOf(data['energy']) }
   }
 
   /** Current travel state for the account's buddy. */

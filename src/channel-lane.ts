@@ -56,6 +56,8 @@
 import { resolveMemberReasoningEffort } from './reasoning.ts'
 
 /** The slice of the host's `llm` service this lane needs. */
+import { sanitizeToolSchemas } from './tool-schema.ts'
+
 export interface ChannelLaneLlm {
   listModels: (provider: string) => Promise<readonly { id: string; name?: string }[]>
   resolveModelInfo?: (provider: string, model: string, signal?: AbortSignal) => Promise<{
@@ -309,7 +311,7 @@ export function mapFinishReason(reason: unknown): string {
   const kind = typeof reason === 'object' && reason !== null
     ? (reason as Record<string, unknown>).kind
     : reason
-  if (kind === 'toolUse' || kind === 'tool_use') return 'tool_calls'
+  if (kind === 'toolUse' || kind === 'tool_use' || kind === 'tool-calls') return 'tool_calls'
   if (kind === 'length') return 'length'
   if (kind === 'aborted') return 'abort'
   return 'stop'
@@ -386,10 +388,10 @@ async function* runTurn(input: {
   if (typeof body.max_tokens === 'number') options.maxTokens = body.max_tokens
   if (typeof body.temperature === 'number') options.temperature = body.temperature
   if (Array.isArray(body.tools) && body.tools.length > 0) {
-    options.tools = body.tools.map((tool: Record<string, unknown>) => {
+    options.tools = sanitizeToolSchemas(body.tools.map((tool: Record<string, unknown>) => {
       const fn = tool.function
       return typeof fn === 'object' && fn !== null ? fn : tool
-    })
+    }))
   }
   if (typeof body.reasoning_effort === 'string' && body.reasoning_effort.trim() !== '') {
     const requested = body.reasoning_effort.trim()

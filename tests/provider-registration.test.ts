@@ -50,9 +50,8 @@ describe('a rejected directory entry cannot take the adapters down with it', () 
     const block = registrationBlock()
     const adapterCalls = block.match(/ctx\.llm\.registerAdapter\(/g) ?? []
     const directoryCall = block.match(/ctx\.llm\.registerConfigurableProviders\(/g) ?? []
-    // Four providers now: the two pool lanes, the aggregate lane and the
-    // credential-free lane. All four in the adapters try, the directory after.
-    expect(adapterCalls).toHaveLength(4)
+    // Four pool adapters and the separately guarded Doubao adapter precede the directory.
+    expect(adapterCalls).toHaveLength(5)
     expect(directoryCall).toHaveLength(1)
     // The four adapter calls must all precede the directory call: the adapters
     // have to be LIVE before the directory is offered, so a directory rejection

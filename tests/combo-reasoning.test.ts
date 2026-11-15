@@ -11,7 +11,7 @@ import type { WorkBuddyUpstreamClient } from '../src/upstream.ts'
 
 // The test drives this plugin's real descriptor builder; the host SDK is external.
 vi.mock('@deepseek-ai/dsh-llm-pi-ai', () => ({ PiAiAdapter: class {} }))
-vi.mock('@deepseek-ai/dsh-llm', () => ({ resolveImageAttachmentAccess: () => {}, resolveRetryPolicy: () => ({}) }))
+vi.mock('@deepseek-ai/dsh-llm', () => ({ LlmAdapter: class {}, resolveImageAttachmentAccess: () => {}, resolveRetryPolicy: () => ({}) }))
 vi.mock('@earendil-works/pi-ai', () => ({ createProvider: (input: unknown) => input }))
 vi.mock('@earendil-works/pi-ai/api/openai-completions.lazy', () => ({ openAICompletionsApi: () => ({}) }))
 import { createWorkBuddyAdapter } from '../src/adapter.ts'

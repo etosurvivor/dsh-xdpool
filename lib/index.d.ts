@@ -29,6 +29,8 @@ type TaskEventTransport = 'desktop' | 'web';
 /** A ready-to-send chain, plus the channel it must go out on. */
 interface TaskEventChain {
   transport: TaskEventTransport;
+  /** Skill sharing uses the newer desktop identity required by that task. */
+  identity?: 'skill-share';
   /** Desktop chains: the event array. */
   events?: readonly Record<string, unknown>[];
   /** Web chains: the single page event to report. */
@@ -369,6 +371,12 @@ interface WorkBuddyTravelState {
   /** Credits an arrived trip pays. */
   rewardCredit: number;
 }
+/** A public marketplace skill that may be used to create a share link. */
+interface ShareableSkill {
+  id: string;
+  name: string;
+  description: string;
+}
 interface WorkBuddyTask {
   /** Upstream task code; the claim path is built from it. */
   taskCode: string;
@@ -627,7 +635,7 @@ export declare class WorkBuddyUpstreamClient {
    * Business fields win over the fingerprint, so a caller can override a device
    * id to align with a real install.
    */
-  reportDesktopEvents(credential: WorkBuddyCredential, events: readonly Record<string, unknown>[]): Promise<void>;
+  reportDesktopEvents(credential: WorkBuddyCredential, events: readonly Record<string, unknown>[], identity?: 'skill-share'): Promise<void>;
   /**
      * Report one chat-activity event to the growth system.
      *
@@ -668,6 +676,12 @@ export declare class WorkBuddyUpstreamClient {
    * response carries the display fields the summon events replay.
    */
   marketExpertList(credential: WorkBuddyCredential, expertType?: 'agent' | 'team' | ''): Promise<readonly MarketExpert[]>;
+  /** Read public marketplace skills for the share-link task. */
+  shareableSkills(credential: WorkBuddyCredential): Promise<readonly ShareableSkill[]>;
+  /** Create a real link for a public marketplace skill. Never sends it to a person. */
+  createSkillShareLink(credential: WorkBuddyCredential, skill: ShareableSkill): Promise<{
+    shareCode: string;
+  }>;
   /**
    * Open a REAL desktop conversation and return the ids the server assigned.
    *
@@ -763,7 +777,10 @@ export declare class WorkBuddyUpstreamClient {
    * is 400 "first_buddy task not completed yet". Callers treat that as "not yet"
    * rather than an error, which is why it is thrown as-is for them to classify.
    */
-  buddyAdoptFirst(credential: WorkBuddyCredential): Promise<void>;
+  buddyAdoptFirst(credential: WorkBuddyCredential): Promise<{
+    credit: number;
+    energy: number;
+  }>;
   /** Current travel state for the account's buddy. */
   buddyTravelStatus(credential: WorkBuddyCredential): Promise<WorkBuddyTravelState>;
   /**
@@ -3862,6 +3879,10 @@ export declare class WorkBuddyScheduler {
   private stopped;
   private readonly states;
   private claimableSeen;
+  /** Completion failures for the latest pass, keyed by account and task. */
+  private readonly eventFailures;
+  /** Direct rewards from first-Buddy adoption, awaiting the task summary. */
+  private readonly buddyAdoptionReceipts;
   /**
    * Credits/energy/tasks earned per account TODAY, keyed by account id.
    *
@@ -4070,6 +4091,8 @@ export declare class WorkBuddyScheduler {
    */
   private reportOne;
   private sendEventChains;
+  /** Adopt only when the account truly lacks a Buddy; verify after the write. */
+  private completeFirstBuddy;
   /**
    * Send one chain on the channel it was built for.
    *

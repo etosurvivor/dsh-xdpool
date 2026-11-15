@@ -29,6 +29,8 @@ export type TaskEventTransport = 'desktop' | 'web'
 /** A ready-to-send chain, plus the channel it must go out on. */
 export interface TaskEventChain {
   transport: TaskEventTransport
+  /** Skill sharing uses the newer desktop identity required by that task. */
+  identity?: 'skill-share'
   /** Desktop chains: the event array. */
   events?: readonly Record<string, unknown>[]
   /** Web chains: the single page event to report. */
@@ -289,6 +291,13 @@ export function skillChain(conversationId: string, requestId: string): TaskEvent
       },
     ],
   }
+}
+
+/** Link-share events, sent only after the server created a real marketplace link. */
+export function skillShareLinkChain(skill: { id: string; name: string }, shareCode: string, now = Date.now()): TaskEventChain {
+  if (!skill.id || !skill.name || !shareCode) throw new Error('skill share event requires a real skill and share code')
+  const common = { eventCode: 'skill_share_channel_action', skillId: skill.id, skillName: skill.name, skillType: 'market', action: 'link', panelType: 'clipboard', isSuccessful: true, cost: 0, id: shareCode, actionAt: now }
+  return { transport: 'desktop', identity: 'skill-share', events: [ { ...common, panelAction: 'click' }, { ...common, panelAction: 'success' } ] }
 }
 
 /** The theme-apply event `Hp_Appearance` is scored on. */

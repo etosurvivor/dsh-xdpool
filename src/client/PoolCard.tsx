@@ -18,6 +18,7 @@ import type { CSSProperties } from 'react'
 import { createElement as h } from 'react'
 import { SIDEBAR_ROW_FIELD, readSidebarRow } from './sidebar-row.ts'
 import { DIST_OPTIONS, distHint, distLabel } from './distribution.ts'
+import { automationGroup, automationNote } from './automation-note.ts'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import {
   POOL_ACCOUNT_DISABLE_PATH,
@@ -52,6 +53,7 @@ import { AggregatePage } from './AggregatePage.tsx'
 import { ChannelsPage } from './ChannelsPage.tsx'
 import { RoutingPage } from './RoutingPage.tsx'
 import { GatewayPage } from './GatewayPage.tsx'
+import { DoubaoPage } from './DoubaoPage.tsx'
 import { RegionCardPane, RegionCardTile, RegionCardTrigger, regionCardStyle } from './region-card.tsx'
 import type { RegionCardState } from './region-card.tsx'
 import { REGION_CHANNEL_BY_REGION } from './region-card.tsx'
@@ -614,7 +616,7 @@ export function PoolCard({ t, settingsScope }: PoolCardProps) {
    * Whether a region's model pane is showing the WHOLE roster.
    *
    * Per region, and default off, because the pane opens on a card the user
-   * scrolled to reach: fourteen full rows of mostly-disabled models pushed
+   * scrolled to reach: thirteen full rows of mostly-disabled models pushed
    * everything else a screen and a half further down (the reported "无限往下
    * 续"). The enabled rows are what "my models" means; the rest are one click
    * away and the button says how many there are.
@@ -2205,14 +2207,14 @@ export function PoolCard({ t, settingsScope }: PoolCardProps) {
                                           {job?.items === undefined || job.items.length === 0
                                             ? null
                                             : <span className="dsm-xdpool-auto-job-items">
-                                                {(['claimed', 'already', 'skipped', 'failed'] as const).map(status => {
-                                                  const group = job.items?.filter(item => item.status === status) ?? []
+                                                {(['claimed', 'already', 'uncovered', 'skipped', 'failed'] as const).map(status => {
+                                                  const group = job.items?.filter(item => automationGroup(item) === status) ?? []
                                                   if (group.length === 0) return null
                                                   return <span
                                                     key={status}
-                                                    className={`dsm-xdpool-auto-job-item dsm-xdpool-auto-job-item-${status}`}
+                                                    className={`dsm-xdpool-auto-job-item dsm-xdpool-auto-job-item-${status === 'uncovered' ? 'skipped' : status}`}
                                                     title={group.map(item => item.title
-                                                      + (item.note === undefined ? '' : ` (${item.note})`)).join('\n')}
+                                                      + (item.note === undefined ? '' : ` (${automationNote(item.note, t)})`)).join('\n')}
                                                   >
                                                     {t?.(`row.autoItem.${status}` as const) ?? status}
                                                     {' '}
@@ -2232,11 +2234,7 @@ export function PoolCard({ t, settingsScope }: PoolCardProps) {
                 })}
               </div>
               </section>
-              {/* 豆包工作暂不启用。
-              <section className="dsm-xdpool-cpool" aria-label="豆包工作账号">
-                <div className="dsm-xdpool-cpool-grid"><DoubaoWorkCard /></div>
-              </section>
-              */}
+              <section className="dsm-xdpool-cpool" aria-label="豆包账号"><DoubaoPage t={t} /></section>
               <ChannelPoolSection t={t} />
               {/* Backup moved to its own page. It operates on the whole credential set
                   rather than on one pool card, and sitting it under the accounts implied a

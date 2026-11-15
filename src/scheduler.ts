@@ -18,18 +18,20 @@
  *
  * Everything is serial and failure-isolated: one account throwing skips that
  * account and continues with the next, and one job throwing never stops the
- * loop. `global`-region accounts are skipped entirely — the international
- * gateway has no growth/task system, so calling it would only produce noise.
+ * loop. `global`-region accounts take part in the jobs that actually exist on
+ * that gateway (`report` and `streak` both do — the daily-active credit depends
+ * on the report), and are held out of the ones that do not (`tasks`, `travel`,
+ * `compensation`). See `JOB_REGION_SCOPE` for the per-job reasons.
  */
 
 import type { WorkBuddyAccount, WorkBuddyAccountPool, WorkBuddyCredential } from './accounts'
 import { randomUUID } from 'node:crypto'
-import { isAlreadyCheckin, isNoCompensation, regionOf } from './upstream'
+import { isAlreadyCheckin, isCheckinUnavailable, isNoCompensation, regionOf } from './upstream'
 import type { WorkBuddyRegion, WorkBuddyTask, WorkBuddyUpstreamClient } from './upstream'
 import {
   APPEARANCE_THEME_KEY, LIGHTHOUSE_EXPERT_ID, automationChain, appearanceChain, buddyAppChain,
   canvasChain, chatChain, expertActualUseEvent, expertChatEvents, expertFromTask, expertIdFromJumpUrl,
-  expertSummonEvents, libraryReadChain, playbookChain, skillChain, templateChains,
+  expertSummonEvents, libraryReadChain, playbookChain, skillChain, skillShareLinkChain, templateChains,
 } from './task-events.ts'
 import type { MarketExpert, TaskEventChain } from './task-events.ts'
 import { DEFAULT_AUTOMATION_HOURS, type PoolWebAutomationItem } from './status-paths.ts'
@@ -94,6 +96,8 @@ const EVENT_CHAIN_BUILDERS: Readonly<Record<string, true>> = {
   Hp_Appearance: true,
   Library_read: true,
   skill_1: true,
+  skill_share: true,
+  first_buddy: true,
   expert_5: true,
   Expert_team_use_3: true,
   Expert_lighthouse: true,
@@ -524,21 +528,45 @@ export function isFireHour(now: Date, hours: readonly number[]): boolean {
  *
  * So the scope is per job, and the default for a job that is not named is `cn`:
  * a new job must opt in explicitly rather than inherit an accident.
+ *
+ * Measured against the live international gateway (`www.workbuddy.ai`,
+ * 2026-11-10) rather than assumed — three of the six jobs do work there, and the
+ * old comment's claim that the gateway "has no activity report and no streak
+ * ladder" was simply wrong:
+ *
+ * - `POST /v2/report` answers 200 `{code:0}` and moves the very next
+ *   `GET /activity/growth/streak` read from `days: 0` to `days: 1` on an account
+ *   with no prior history. That is the whole daily-active credit mechanism: each
+ *   recorded active day grants a 30-credit `Bonus Pack` (31-day expiry, granted
+ *   server-side the following morning — there is no claim endpoint).
+ * - `GET /activity/growth/streak` returns the same shape as CN (`streak.days`,
+ *   `next_tier`, and `redemption_status.tiers[].{tier,days,credit,energy,cards,
+ *   chances}`), so the streak ladder and its `7d/14d/28d` redemption work too.
+ * - Check-in is the one thing that genuinely does not: the activity is closed
+ *   (`active: false`) and `daily-checkin` answers `签到活动未开启或已过期`, which
+ *   `isAlreadyCheckin` does not recognise — hence the misleading `failed: +1`.
+ *
+ * The task centre also exists (`GET /v2/activity/growth/tasks` returns five
+ * tasks) but is NOT safe to enable: its entries key on numeric `task_id` + `code`
+ * with no `task_code`, no `reward_credit`/`reward_energy` and no `current`/
+ * `target`, so `parseTask` drops them and `tasks/accept` answers `task not found`.
+ * Making that work is a parsing job with no measurable payout, so it stays off.
  */
 const JOB_REGION_SCOPE: Readonly<Record<string, readonly WorkBuddyRegion[]>> = {
-  // Growth jobs are CN-only: the international gateway has no task centre, no
-  // activity report and no streak ladder, so calling those endpoints there would
-  // only produce 404s and noise.
-  report: ['cn'],
+  // Both live on the growth gateway, which exists in both regions.
+  report: ['cn', 'global'],
+  streak: ['cn', 'global'],
+  // Task centre + travel + compensation are CN-only: the international entries
+  // use a different task schema (see above), `buddy/info` reports no buddy, and
+  // the compensation routes are served by the CN billing host only.
   tasks: ['cn'],
-  streak: ['cn'],
   travel: ['cn'],
   compensation: ['cn'],
-  // Check-in is the one job that pays credits on both gateways, and it is the
-  // safest to try: idempotent, one call, and "already checked in" is already
-  // classified as success rather than failure. So a global account is allowed
-  // here — if the endpoint turns out not to exist there, the run records one
-  // skipped item and the rest of the pool is unaffected.
+  // Check-in pays credits on both gateways, and it is the safest to try:
+  // idempotent, one call, and "already checked in" is already classified as
+  // success rather than failure. So a global account is allowed here — if the
+  // endpoint turns out not to exist there, the run records one skipped item and
+  // the rest of the pool is unaffected.
   checkin: ['cn', 'global'],
 }
 
@@ -641,6 +669,10 @@ export class WorkBuddyScheduler {
   }
 
   private claimableSeen = 0
+  /** Completion failures for the latest pass, keyed by account and task. */
+  private readonly eventFailures = new Map<string, Set<string>>()
+  /** Direct rewards from first-Buddy adoption, awaiting the task summary. */
+  private readonly buddyAdoptionReceipts = new Map<string, { credit: number; energy: number }>()
   /**
    * Credits/energy/tasks earned per account TODAY, keyed by account id.
    *
@@ -1263,14 +1295,27 @@ export class WorkBuddyScheduler {
               // bad minute must not cost the user their check-in — in which case
               // the old behaviour (claim, translate the error) is the fallback.
               let alreadyDone = false
+              let activityClosed = false
               try {
                 const status = await this.client.fetchCheckinStatus(account.credential)
                 alreadyDone = status.todayCheckedIn === true
+                // `active: false` means the gateway runs no check-in activity at
+                // all — the international one answers exactly this. Skip the
+                // write: claiming would only earn a 400 and a failure row.
+                //
+                // Strictly `=== false`: an older upstream that omits the field
+                // must fall through to the claim path, not be read as "closed".
+                activityClosed = status.active === false
               } catch (error: unknown) {
                 this.logger.warn?.(`automation checkin ${account.label}: status read failed, claiming anyway:`, error)
               }
               if (alreadyDone) {
                 this.logger.info?.(`automation checkin ${account.label}: already done today (read, not claimed)`)
+                break
+              }
+              if (activityClosed) {
+                this.logger.info?.(`automation checkin ${account.label}: no check-in activity on this gateway, skipped`)
+                items.push({ title: '每日签到', status: 'skipped', note: 'this gateway runs no check-in activity' })
                 break
               }
               try {
@@ -1286,7 +1331,13 @@ export class WorkBuddyScheduler {
                 // Still translated, because the status read above can fail or
                 // race another client: "already checked in" arriving as an error
                 // is an idempotent success, and counting it as a failure would
-                // make a healthy account look broken.
+                // make a healthy account look broken. Same for "the activity is
+                // not running here" — nothing was collected, but nothing broke.
+                if (isCheckinUnavailable(error)) {
+                  this.logger.info?.(`automation checkin ${account.label}: no check-in activity on this gateway, skipped`)
+                  items.push({ title: '每日签到', status: 'skipped', note: 'this gateway runs no check-in activity' })
+                  break
+                }
                 if (!isAlreadyCheckin(error)) throw error
                 this.logger.info?.(`automation checkin ${account.label}: already done today`)
               }
@@ -1461,6 +1512,7 @@ export class WorkBuddyScheduler {
     let sentAnything = false
     for (const account of accounts) {
       if (this.stopped) return
+      this.eventFailures.delete(account.id)
       let tasks: readonly WorkBuddyTask[]
       try {
         tasks = await this.client.listTasks(account.credential)
@@ -1473,14 +1525,30 @@ export class WorkBuddyScheduler {
       // Every task still short of its target is a candidate. The chains build
       // their own ids, so there is nothing to cache between accounts.
       const pending = tasks.filter(task =>
-        task.taskCode in EVENT_CHAIN_BUILDERS && !task.claimable && !task.locked)
+        Object.hasOwn(EVENT_CHAIN_BUILDERS, task.taskCode) && !task.claimed && !task.claimable && !task.locked)
       for (const task of pending) {
         if (this.stopped) return
         let chains: readonly TaskEventChain[]
         try {
+          if (task.taskCode === 'first_buddy') {
+            if (await this.completeFirstBuddy(account)) sentAnything = true
+            continue
+          }
+          // Some tasks need explicit acceptance before their completion event.
+          if (task.taskCode === 'skill_share' && task.acceptStatus === 'not_accepted') {
+            await this.client.acceptTasks(account.credential, [task.taskCode])
+            const updated = (await this.client.listTasks(account.credential)).find(row => row.taskCode === task.taskCode)
+            if (updated === undefined || (updated.acceptStatus === 'not_accepted' || updated.acceptStatus === '') || updated.locked) throw new Error('skill_share task was not accepted')
+            if (updated.claimed || updated.claimable) continue
+          }
           chains = await this.chainsFor(task, account.credential)
         } catch (error: unknown) {
-          this.logger.warn?.(`automation events ${account.label}: ${task.taskCode} could not be built:`, error)
+          const failed = this.eventFailures.get(account.id) ?? new Set<string>()
+          failed.add(task.taskCode)
+          this.eventFailures.set(account.id, failed)
+          // Share-service errors may contain a generated link: never log them.
+          if (task.taskCode === 'skill_share') this.logger.warn?.(`automation events ${account.label}: skill_share failed`)
+          else this.logger.warn?.(`automation events ${account.label}: ${task.taskCode} could not be built:`, error)
           continue
         }
         for (const chain of chains) {
@@ -1491,7 +1559,11 @@ export class WorkBuddyScheduler {
             sentAnything = true
           } catch (error: unknown) {
             // One chain failing must not stop the others or the claim pass.
-            this.logger.warn?.(`automation events ${account.label}: ${task.taskCode} failed:`, error)
+            const failed = this.eventFailures.get(account.id) ?? new Set<string>()
+            failed.add(task.taskCode)
+            this.eventFailures.set(account.id, failed)
+            if (task.taskCode === 'skill_share') this.logger.warn?.(`automation events ${account.label}: skill_share report failed`)
+            else this.logger.warn?.(`automation events ${account.label}: ${task.taskCode} failed:`, error)
             break
           }
           if (this.delayMs > 0 && !this.stopped) await sleep(this.delayMs)
@@ -1502,6 +1574,18 @@ export class WorkBuddyScheduler {
     // lets the claim pass that follows collect the reward on THIS run instead of
     // leaving it for a later one. Paid once for the pool.
     if (sentAnything && this.eventScoreWaitMs > 0 && !this.stopped) await sleep(this.eventScoreWaitMs)
+  }
+
+  /** Adopt only when the account truly lacks a Buddy; verify after the write. */
+  private async completeFirstBuddy(account: WorkBuddyAccount): Promise<boolean> {
+    const credential = account.credential
+    if (await this.client.buddyInfo(credential) !== undefined) return false
+    await this.client.reportDesktopEvents(credential, [{ eventCode: 'buddy_agreement_view', timestamp: Date.now() }])
+    await this.client.buddyAgree(credential)
+    const receipt = await this.client.buddyAdoptFirst(credential)
+    if (receipt && (receipt.credit > 0 || receipt.energy > 0)) this.buddyAdoptionReceipts.set(account.id, receipt)
+    if (await this.client.buddyInfo(credential) === undefined) throw new Error('first_buddy adoption was not confirmed')
+    return true
   }
 
   /**
@@ -1518,7 +1602,7 @@ export class WorkBuddyScheduler {
       await this.client.reportWebEvent(credential, web.eventCode, web.pageUrl, web.elementId, web.elementName)
       return
     }
-    await this.client.reportDesktopEvents(credential, chain.events ?? [])
+    await this.client.reportDesktopEvents(credential, chain.events ?? [], chain.identity)
   }
 
   /**
@@ -1552,6 +1636,13 @@ export class WorkBuddyScheduler {
         return [appearanceChain()]
       case 'Library_read':
         return [libraryReadChain()]
+      case 'skill_share': {
+        const skills = await this.client.shareableSkills(credential)
+        const skill = skills[0]
+        if (skill === undefined) throw new Error('skill_share: no public marketplace skill available')
+        const share = await this.client.createSkillShareLink(credential, skill)
+        return [skillShareLinkChain(skill, share.shareCode)]
+      }
       case 'skill_1': {
         const chat = await this.client.openConversation(credential)
         if (chat === undefined) throw new Error('skill_1: no server conversation')
@@ -1803,26 +1894,29 @@ export class WorkBuddyScheduler {
     const refreshed = await this.client.listTasks(credential)
     const claimable = refreshed.filter(task => task.claimable && !task.locked)
 
-    let credit = 0
-    let energy = 0
-    let claimed = 0
+    const adoption = this.buddyAdoptionReceipts.get(account.id)
+    let credit = adoption?.credit ?? 0
+    let energy = adoption?.energy ?? 0
+    let claimed = adoption === undefined ? 0 : 1
     const titles: string[] = []
     // One entry per task the board showed, not just the ones that paid. The
     // distinction is the point: "0 claimed" is three different situations —
     // everything already collected, nothing claimable yet, or the endpoint
     // failing — and each needs a different action from the reader.
     const items: PoolWebAutomationItem[] = []
+    if (adoption !== undefined) items.push({ title: 'Buddy 领养奖励', status: 'claimed', ...(adoption.credit > 0 ? { credit: adoption.credit } : {}), ...(adoption.energy > 0 ? { energy: adoption.energy } : {}) })
     for (const task of refreshed) {
-      const blocked = task.locked === true || task.claimable !== true
-      if (blocked) {
-        items.push({
-          title: task.title === '' ? task.taskCode : task.title,
-          status: 'skipped',
-          // Named so the card can say WHY without a second lookup: a locked task
-          // is waiting on the client-side scoring pass, an unlocked-but-not-
-          // claimable one has simply not been scored yet.
-          note: task.locked === true ? 'locked' : (task.acceptStatus === 'not_accepted' ? 'not accepted' : 'not scored yet'),
-        })
+      const title = task.title === '' ? task.taskCode : task.title
+      if (task.claimed) {
+        items.push({ title, status: 'already' })
+      } else if (!task.claimable && this.eventFailures.get(account.id)?.has(task.taskCode)) {
+        items.push({ title, status: 'failed', note: 'automatic completion failed' })
+      } else if (task.locked || !task.claimable) {
+        const note = task.locked ? 'locked'
+          : task.acceptStatus === 'not_accepted' ? 'not accepted'
+          : Object.hasOwn(EVENT_CHAIN_BUILDERS, task.taskCode) ? 'not scored yet'
+          : 'not covered by automation'
+        items.push({ title, status: 'skipped', note })
       }
     }
     for (const task of claimable) {
@@ -1850,6 +1944,7 @@ export class WorkBuddyScheduler {
       if (this.delayMs > 0 && !this.stopped) await sleep(this.delayMs)
     }
 
+    this.buddyAdoptionReceipts.delete(account.id)
     return { claimed, credit, energy, claimableCount: claimable.length, titles, items }
   }
 

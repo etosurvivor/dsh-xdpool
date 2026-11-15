@@ -69,42 +69,21 @@ const success = () => new Response('data: {"choices":[{"delta":{"content":"OK"}}
 const sseError = (code = 'InferHub.APIG.0101.404', message = 'API does not exist') =>
   () => new Response(`data: ${JSON.stringify({ error_code: code, error_msg: message })}\n\n`)
 
-describe('CodeArts benefit header fallback in the shipped adapter', () => {
-  it.each([
-    ['prefixed SSE error code', sseError()],
-    ['APIG in SSE error message', sseError('Other.Error', 'gateway APIG.0101 rejected')],
-    ['HTTP 404', () => new Response('not found', { status: 404 })],
-    ['APIG in a non-2xx body', () => new Response('InferHub.APIG.0101.404', { status: 502 })],
-    ['the existing benefit-not-found error', sseError('InferHub.4004.200', 'benefit not found')],
-  ])('drops the header and signs again after %s', async (_name, first) => {
-    const f = fixture([first as () => Response, success])
+describe('CodeArts does not send the retired benefit header', () => {
+  it.each(['deepseek-v4.1-flash', 'glm-5.3-flash', 'openpangu-2.0-pro'])('signs the first request without the benefit header for %s', async model => {
+    const f = fixture([success], model)
     expect(await f.run()).toContainEqual(expect.objectContaining({ type: 'text-delta', text: 'OK' }))
-    expect(f.requests.map(headers => headers.get('maas_type'))).toEqual(['benefit', null])
-    expect(f.signatures).toEqual([{ maas_type: 'benefit' }, undefined])
-    expect(f.requests.map(headers => headers.get('authorization'))).toEqual(['signed-1', 'signed-2'])
+    expect(f.requests.map(headers => headers.get('maas_type'))).toEqual([null])
+    expect(f.signatures).toEqual([undefined])
   })
-
-  it('throws after the header-free SSE attempt also fails', async () => {
-    const f = fixture([sseError(), sseError()])
-    await expect(f.run()).rejects.toMatchObject({ code: 'BENEFIT_HEADER_REJECTED' })
-    expect(f.requests).toHaveLength(2)
-  })
-
-  it('throws after the header-free HTTP attempt also fails', async () => {
-    const failure = () => new Response('not found', { status: 404 })
-    const f = fixture([failure, failure])
-    await expect(f.run()).rejects.toMatchObject({ code: 'INVALID_REQUEST' })
-    expect(f.requests).toHaveLength(2)
-  })
-
-  it('does not retry an unrelated SSE request error', async () => {
-    const f = fixture([sseError('InferHub.4001.200', 'bad parameter')])
-    await expect(f.run()).rejects.toMatchObject({ code: 'INVALID_REQUEST' })
-    expect(f.requests).toHaveLength(1)
-  })
-
-  it.each([sseError(), () => new Response('not found', { status: 404 })])('does not apply the fallback to another model', async first => {
-    const f = fixture([first], 'openpangu-2.0-pro')
+  it.each([
+    ['prefixed SSE error', sseError()],
+    ['APIG message', sseError('Other.Error', 'gateway APIG.0101 rejected')],
+    ['HTTP 404', () => new Response('not found', { status: 404 })],
+    ['APIG HTTP error', () => new Response('InferHub.APIG.0101.404', { status: 502 })],
+    ['benefit not found', sseError('InferHub.4004.200', 'benefit not found')],
+  ])('does not repeat a header-free request after %s', async (_name, first) => {
+    const f = fixture([first as () => Response])
     await expect(f.run()).rejects.toBeInstanceOf(ModelError)
     expect(f.requests).toHaveLength(1)
     expect(f.requests[0]?.get('maas_type')).toBeNull()

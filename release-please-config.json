@@ -7,9 +7,6 @@
       "package-name": "heybash-xdpool",
       "changelog-path": "CHANGELOG.md",
       "bootstrap-sha": "9c90a370c3233a54338abc670075c7fedc036fc9",
-      "labels": [
-        "automerge"
-      ],
       "changelog-sections": [
         {
           "type": "feat",

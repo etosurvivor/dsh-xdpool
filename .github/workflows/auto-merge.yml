@@ -65,12 +65,15 @@ jobs:
           HAS_LABEL: ${{ steps.gate.outputs.has_label }}
           IS_DEP: ${{ steps.gate.outputs.is_dependabot }}
           UPDATE_TYPE: ${{ steps.dep.outputs.update-type }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
           allow=false
           reason=""
           # 口径一：显式打了 automerge 标签 —— 任何作者都算（含 fork PR）
-          if [ "$HAS_LABEL" = "true" ]; then
+          if [[ "$PR_HEAD_REF" == release-please--* ]]; then
+            reason="release-needs-local-verification"
+          elif [ "$HAS_LABEL" = "true" ]; then
             allow=true
             reason="label:automerge"
           # 口径二：dependabot 且仅 patch/minor；major 永远不自动合

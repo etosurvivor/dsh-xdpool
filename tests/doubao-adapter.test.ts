@@ -32,6 +32,20 @@ describe('豆包直接对话适配', () => {
     expect(await new DoubaoAdapter(() => undefined).listModels()).toEqual([])
     expect((await new DoubaoAdapter(() => session).listModels()).map(row => row.id)).toEqual(['0', '3'])
   })
+  it('shows enabled work models and dispatches them in work mode', async () => {
+    const catalog = () => [
+      { id: '0', name: '快速', mode: 'chat' as const },
+      { id: 'person-deepseek', name: 'DeepSeek', mode: 'work' as const, reasoning: [{ level: 3, name: '低' }, { level: 7, name: '最高' }] },
+    ]
+    const adapter = new DoubaoAdapter(() => session, { ready: Promise.resolve(), store: { isEnabled: id => id !== '0' }, catalog })
+    expect((await adapter.listModels()).map(row => row.id)).toEqual(['person-deepseek'])
+    expect((await adapter.resolveModel(DOUBAO_PROVIDER_ID, '0')).name).toBe('快速')
+    expect((await adapter.resolveModel(DOUBAO_PROVIDER_ID, 'person-deepseek')).reasoning?.efforts.map(x => x.id)).toEqual(['low', 'max'])
+    fake.reply = 'OK'
+    await collect(adapter, options({ model: 'person-deepseek' }))
+    expect(fake.request).toMatchObject({ taskMode: true, model: 'person-deepseek' })
+    await expect(adapter.resolveModel(DOUBAO_PROVIDER_ID, 'unknown')).rejects.toThrow('不存在')
+  })
   it('emits a complete text block', async () => {
     fake.reply = '你好'
     const chunks = await collect(new DoubaoAdapter(() => session), options())

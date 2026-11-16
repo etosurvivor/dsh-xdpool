@@ -276,6 +276,9 @@ const KIND_STATUS: Readonly<Record<UpstreamErrorKind, number>> = {
   hard_credit: 402,
   soft_rate: 429,
   session_dead: 401,
+  // The upstream's own status: the account is flagged, and a client must not read this as
+  // "your key is wrong" and retry with the same credential forever.
+  risk_blocked: 403,
   not_found: 502,
   server: 502,
   client: 400,
@@ -1339,6 +1342,9 @@ function withBareModelId(raw: string, modelId: string): string {
         last = { kind: result.kind, status: result.status, message: result.message }
         if (result.kind === 'soft_rate') pool.penalize(account.id, parseRateLimitReset(result.message), member.modelId)
         else if (result.kind === 'session_dead') pool.penalizeCredentialDead(account.id)
+        // A flagged account is not a dead one: refreshing its token changes nothing, so the
+        // pool cools it and moves on rather than retrying the same credential (issue #127).
+        else if (result.kind === 'risk_blocked') pool.penalize(account.id, Date.now() + 30 * 60_000)
         else if (result.kind === 'hard_credit') pool.penalizeExhausted(account.id)
         noteSwitch(member.modelId, result.kind, result.status)
         continue
@@ -1747,6 +1753,11 @@ function withBareModelId(raw: string, modelId: string): string {
               + `(attempt ${attempt + 1}/${maxAttempts}); rotating`,
           )
         }
+        continue
+      }
+      if (result.kind === 'risk_blocked') {
+        pool.penalize(account.id, Date.now() + 30 * 60_000)
+        logger?.warn(`heybash-xdpool: ${account.label} is risk-blocked; cooling the account and rotating`)
         continue
       }
       // Credit exhaustion is an ACCOUNT condition, not a model one: every model on
@@ -2315,6 +2326,10 @@ async function recoverFromContextOverrun(options: RecoverOptions): Promise<Recov
     }
     if (result.kind === 'hard_credit') {
       pool.penalizeExhausted(account.id)
+      continue
+    }
+    if (result.kind === 'risk_blocked') {
+      pool.penalize(account.id, Date.now() + 30 * 60_000)
       continue
     }
     if (result.kind === 'soft_rate') {

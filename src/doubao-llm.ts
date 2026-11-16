@@ -152,9 +152,9 @@ export function createDoubaoLlm(options: DoubaoLlmOptions): DoubaoLlm {
        * value falls back to the middle level, which every model in the family accepts.
        */
       const requested = streamOptions['reasoningEffort']
-      const levelName = DOUBAO_REASONING_LEVELS.some(entry => entry.id === requested)
-        ? String(requested)
-        : 'medium'
+      const levelName = typeof requested === 'string' && (DOUBAO_REASONING_LEVELS.some(entry => entry.id === requested) || /^\d{1,3}$/u.test(requested))
+        ? requested
+        : 'high'
       const signal = streamOptions['signal'] instanceof AbortSignal
         ? streamOptions['signal'] as AbortSignal
         : new AbortController().signal
@@ -167,6 +167,9 @@ export function createDoubaoLlm(options: DoubaoLlmOptions): DoubaoLlm {
 
       const turn = chat(prompt, {
         modelKey: model.id,
+        taskMode: streamOptions['taskMode'] === true,
+        allowTaskFallback: false,
+        isolatedWorkspace: true,
         reasoningLevel: levelName,
         signal,
         callbacks: {

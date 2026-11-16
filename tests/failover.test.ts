@@ -160,6 +160,30 @@ describe('account pool', () => {
 })
 
 describe('shim failover', () => {
+  it('cools a risk-blocked account for 30 minutes and rotates without refreshing its credential', async () => {
+    const pool = new WorkBuddyAccountPool({ authDirs: [await fakeAuthDir(2)] })
+    await pool.scan()
+    let blocked = ''
+    const hits: string[] = []
+    const client = new WorkBuddyUpstreamClient({ fetchImpl: (async (_url: unknown, init: RequestInit) => {
+      const headers = init.headers as Record<string, string>
+      const token = headers['Authorization'] ?? ''
+      hits.push(token)
+      if (blocked === '') blocked = token
+      if (token === blocked) return new Response('{"code":11140,"message":"risk"}', { status: 403 })
+      return new Response('data: {"ok":true}\n\ndata: [DONE]\n\n', { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    }) as never })
+    const shim = createWorkBuddyShim({ pool, client, catalog: new WorkBuddyCatalog() })
+    shims.push(shim); await shim.ready
+    const before = Date.now()
+    const response = await fetch(`${shim.baseUrl()}/v1/chat/completions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${shim.token()}` },
+      body: JSON.stringify({ model: 'hy4-preview', messages: [{ role: 'user', content: 'hi' }] }),
+    })
+    expect(response.status).toBe(200)
+    expect(new Set(hits).size).toBe(2)
+    expect(pool.list().filter(account => account.cooldownUntilMs >= before + 29 * 60_000)).toHaveLength(1)
+  })
   it('rotates to a healthy account when one is rate-limited', async () => {
     const pool = new WorkBuddyAccountPool({ authDirs: [await fakeAuthDir(3)] })
     await pool.scan()

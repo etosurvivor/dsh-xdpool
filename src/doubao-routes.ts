@@ -19,7 +19,9 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
-import { POOL_DOUBAO_QUOTA_PATH, POOL_DOUBAO_SESSION_PATH } from './status-paths.ts'
+import { POOL_DOUBAO_MODELS_PATH, POOL_DOUBAO_QUOTA_PATH, POOL_DOUBAO_SESSION_PATH } from './status-paths.ts'
+import type { DoubaoModelStore } from './doubao-model-store.ts'
+import type { LocalDoubaoModel } from './doubao-local-models.ts'
 import { browserLogin, sessionUsable, type DoubaoSession } from './doubao-auth.ts'
 import { fetchQuota } from './doubao-quota.ts'
 import { setDoubaoSession } from './doubao-upstream.ts'
@@ -32,6 +34,7 @@ export interface DoubaoRouteOptions {
   save: (session: DoubaoSession) => void
   /** Forget the session. */
   clear: () => void
+  models: { ready: Promise<void>; store: DoubaoModelStore; catalog: () => readonly LocalDoubaoModel[]; changed: () => void }
 }
 
 /** Write a JSON response. */
@@ -139,9 +142,38 @@ export function registerDoubaoRoutes(ctx: Context, deps: DoubaoRouteOptions): vo
       },
     })
 
+    const disposeModels = ctx.webServer.register({
+      kind: 'exact',
+      path: POOL_DOUBAO_MODELS_PATH,
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
+        try {
+          await deps.models.ready
+          if (req.method === 'PUT') {
+            let raw = ''
+            for await (const chunk of req) {
+              raw += String(chunk)
+              if (raw.length > 16_384) return json(res, 413, { error: '模型选择数据过大' })
+            }
+            const body: unknown = JSON.parse(raw)
+            const ids = (body as { disabled?: unknown } | null)?.disabled
+            if (!Array.isArray(ids) || !ids.every(id => typeof id === 'string')) return json(res, 400, { error: '模型选择无效' })
+            const allowed = new Set([...deps.models.catalog().map(model => model.id), ...deps.models.store.disabledIds()])
+            if (ids.some(id => !allowed.has(id))) return json(res, 400, { error: '模型选择包含未知模型' })
+            await deps.models.store.setDisabled(ids)
+            deps.models.changed()
+          } else if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
+          return json(res, 200, { ok: true, disabledIds: deps.models.store.disabledIds(), models: deps.models.catalog().map(model => ({ ...model, enabled: deps.models.store.isEnabled(model.id) })) })
+        } catch (error: unknown) {
+          return json(res, 500, { error: error instanceof Error ? error.message : '读取模型失败' })
+        }
+      },
+    })
+
     return () => {
       disposeSession()
       disposeQuota()
+      disposeModels()
     }
   })
 }

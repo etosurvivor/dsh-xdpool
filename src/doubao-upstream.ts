@@ -349,7 +349,7 @@ export interface ChatRequestOptions {
    * Defaults to 高 (5), the level the desktop app itself starts on. All three
    * values were read off the running client — see {@link DOUBAO_REASONING_LEVELS}.
    */
-  reasoningLevel?: 'low' | 'mid' | 'high' | 'xhigh' | 'max'
+  reasoningLevel?: string
   /**
    * `option.agent_mode` / `ext.agent_mode`.
    *
@@ -376,6 +376,10 @@ export interface ChatRequestOptions {
    * without a rebuild — the escape hatch for a server-side rejection.
    */
   taskMode?: boolean
+  /** Do not silently change a selected work model to the default chat model. */
+  allowTaskFallback?: boolean
+  /** DSH owns tools; do not expose its real workspace or local skill paths. */
+  isolatedWorkspace?: boolean
   /**
    * Ask for the 深度思考 pass (probe knob; see `buildChatBody`).
    */
@@ -449,9 +453,10 @@ export function buildGeneralTaskParam(
   localMessageId: string,
   workspace: string,
   prompt?: string,
+  isolated = false,
 ): Record<string, unknown> {
-  const userData = findDoubaoUserDataDir()
-  const agentWorkspace = userData === undefined
+  const userData = isolated ? undefined : findDoubaoUserDataDir()
+  const agentWorkspace = isolated ? tmpdir() : userData === undefined
     ? join(tmpdir(), 'dsh-doubao-agent-workspace')
     : join(userData, 'Default', '.doubao', 'agent_mode', 'workspace')
   return {
@@ -465,7 +470,7 @@ export function buildGeneralTaskParam(
       workspace,
       agent_workspace: {
         agent_workspace: agentWorkspace,
-        local_skill_paths: [join(homedir(), 'Doubao', 'skills'), join(homedir(), '.agents', 'skills')],
+        local_skill_paths: isolated ? [] : [join(homedir(), 'Doubao', 'skills'), join(homedir(), '.agents', 'skills')],
       },
       sandbox_auth_type: TASK_SANDBOX_AUTH_ALLOW_ALL,
     },
@@ -473,7 +478,7 @@ export function buildGeneralTaskParam(
     need_modify_conversation: false,
     agent_task_param: {
       runtime_type: TASK_RUNTIME_LOCAL_PC,
-      device_name: hostname(),
+      device_name: isolated ? 'DSH' : hostname(),
       workspace,
       local_device_id: CLIENT_PARAMS.device_id,
       local_app_id: CLIENT_PARAMS.aid,
@@ -574,8 +579,9 @@ export function buildChatBody(prompt: string, options: ChatRequestOptions = {}) 
   const taskParam = task
     ? buildGeneralTaskParam(
         localMessageId,
-        taskWorkspaceOf(options),
+        options.isolatedWorkspace === true ? tmpdir() : taskWorkspaceOf(options),
         taskModelSelected ? prompt : undefined,
+        options.isolatedWorkspace === true,
       )
     : plainTaskParam
   const modelExtraParams: Record<string, string> = taskModelSelected
@@ -1133,7 +1139,7 @@ export interface StreamCallbacks {
  * + `msg/complete` until `agent_finished` (`command: 6004`) satisfies the server
  * runtime without requiring the Doubao desktop CUA process.
  */
-async function runToolLocalResponder(
+export async function runToolLocalResponder(
   uniqueKey: string,
   credentials: DoubaoCredentials,
   isStreamDone: () => boolean,
@@ -1179,38 +1185,10 @@ async function runToolLocalResponder(
       const cmdCall = msg?.body?.cmd_call
       const agentFinished = msg?.body?.agent_finished
       if (cmdCall !== undefined) {
-        let inputObj: Record<string, any> = {}
-        try {
-          inputObj = JSON.parse(cmdCall.input ?? '{}') as Record<string, any>
-        } catch {
-          inputObj = {}
-        }
-        const ops = Array.isArray(inputObj.operations) ? inputObj.operations : []
-        const results = ops.map((op: Record<string, any>) => ({
-          ...(op.sequence !== undefined ? { sequence: op.sequence } : {}),
-          id: op.id,
-          type: op.type,
-          path: op.path,
-          status: 'success',
-        }))
-        const outputObj = {
-          request_id: inputObj.request_id ?? '',
-          status: 'success',
-          results,
-        }
-        try {
-          await postToolJson(TOOL_LOCAL_UPLOAD_ENDPOINT, {
-            cmd_id: cmdCall.cmd_id,
-            session_id: msg.session_id,
-            msg_id: msgId,
-            output: JSON.stringify(outputObj),
-          })
-          await postToolJson(TOOL_LOCAL_COMPLETE_ENDPOINT, { msg_id: msgId })
-        } catch {
-          return
-        }
-        seq += 1
-        continue
+        // We do not own Doubao's local workspace runtime. Never report a command as
+        // successful unless the host actually executed it; DSH tool calls travel through
+        // the normal tool protocol instead.
+        throw new Error('豆包请求了无法由 DSH 验证的本地操作，已停止；请使用 DSH 工具重试。')
       }
       if (agentFinished !== undefined) {
         return
@@ -1268,13 +1246,15 @@ async function streamOnce(
   const body = JSON.stringify(bodyObj)
   const isTask = taskModeEnabled(options)
 
+  const responderAbort = new AbortController()
+  const requestSignal = options.signal ? AbortSignal.any([options.signal, responderAbort.signal]) : responderAbort.signal
   let response: Response
   try {
     response = await fetch(url, {
       method: 'POST',
       headers,
       body,
-      ...(options.signal ? { signal: options.signal } : {}),
+      signal: requestSignal,
     })
   } catch (error) {
     // A caller abort is not a failure — let the AbortError through untouched so
@@ -1302,15 +1282,23 @@ async function streamOnce(
   absorbSetCookies(response.headers)
 
   let streamDone = false
+  let responderFailure: unknown
   const responderPromise = isTask
-    ? runToolLocalResponder(uniqueKey, credentials, () => streamDone, options.signal).catch(() => {})
+    ? runToolLocalResponder(uniqueKey, credentials, () => streamDone, requestSignal).catch((error: unknown) => {
+        responderFailure = error
+        responderAbort.abort()
+      })
     : Promise.resolve()
 
   try {
-    const result = await consumeStream(response, options.callbacks, {
-      harvestNotifyText: isTask,
-    })
+    const result = await consumeStream(response, options.callbacks, { harvestNotifyText: isTask })
+    streamDone = true
+    await responderPromise
+    if (responderFailure !== undefined) throw responderFailure
     return result
+  } catch (error: unknown) {
+    if (responderFailure !== undefined) throw responderFailure
+    throw error
   } finally {
     streamDone = true
     await responderPromise
@@ -1361,7 +1349,7 @@ export async function streamChat(
   } catch (error) {
     const taskRuntimeMissing = error instanceof DoubaoUpstreamError &&
       (error.code === CODE_TASK_RUNTIME_UNAVAILABLE || /agent_err_real_answer/.test(error.message))
-    if (!wanted || !taskRuntimeMissing || emittedText) throw error
+    if (!wanted || !taskRuntimeMissing || emittedText || options.allowTaskFallback === false) throw error
     return call(false)
   }
 }

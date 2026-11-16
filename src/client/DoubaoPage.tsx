@@ -21,10 +21,12 @@ import { DOUBAO_WORK_ICON } from './doubao-work-icon.ts'
  * @module dsh-xdpool/client/DoubaoPage
  */
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
-import { POOL_DOUBAO_QUOTA_PATH, POOL_DOUBAO_SESSION_PATH } from '../status-paths.ts'
+import { POOL_DOUBAO_MODELS_PATH, POOL_DOUBAO_QUOTA_PATH, POOL_DOUBAO_SESSION_PATH } from '../status-paths.ts'
 import type { XdPoolSettingsKey } from './locales.ts'
 
 type Translate = (key: XdPoolSettingsKey, params?: Record<string, unknown>) => string
+interface ModelRow { id: string; name: string; mode: 'chat' | 'work' | 'unknown'; rate?: string; enabled: boolean }
+interface ModelDocument { ok?: boolean; models?: ModelRow[]; disabledIds?: string[]; error?: string }
 
 /** One quota window, as the route reports it. */
 interface QuotaWindow {
@@ -77,6 +79,9 @@ export function DoubaoPage({ t }: { readonly t?: Translate | undefined }): React
   const [error, setError] = useState<string | undefined>(undefined)
   const [windows, setWindows] = useState<readonly QuotaWindow[]>([])
   const [exhausted, setExhausted] = useState(false)
+  const [models, setModels] = useState<readonly ModelRow[]>([])
+  const [disabledIds, setDisabledIds] = useState<readonly string[]>([])
+  const [modelBusy, setModelBusy] = useState(false)
   const mounted = useRef(true)
   const poll = useRef<number | undefined>(undefined)
 
@@ -91,6 +96,30 @@ export function DoubaoPage({ t }: { readonly t?: Translate | undefined }): React
     }
   }, [])
 
+  const loadModels = useCallback(async (): Promise<void> => {
+    const response = await fetch(POOL_DOUBAO_MODELS_PATH, { credentials: 'same-origin' })
+    const value = await response.json() as ModelDocument
+    if (!response.ok || value.ok !== true) throw new Error(value.error ?? '读取豆包模型失败')
+    if (mounted.current) {
+      setModels(Array.isArray(value.models) ? value.models : [])
+      setDisabledIds(Array.isArray(value.disabledIds) ? value.disabledIds : [])
+    }
+  }, [])
+  const saveModels = useCallback(async (next: readonly string[]): Promise<void> => {
+    setModelBusy(true)
+    setError(undefined)
+    try {
+      const response = await fetch(POOL_DOUBAO_MODELS_PATH, { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ disabled: next }) })
+      const value = await response.json() as ModelDocument
+      if (!response.ok || value.ok !== true) throw new Error(value.error ?? '保存豆包模型失败')
+      if (mounted.current) {
+        setModels(Array.isArray(value.models) ? value.models : [])
+        setDisabledIds(Array.isArray(value.disabledIds) ? value.disabledIds : [])
+      }
+    } catch (cause: unknown) { if (mounted.current) setError(cause instanceof Error ? cause.message : String(cause)) }
+    finally { if (mounted.current) setModelBusy(false) }
+  }, [])
+
   /** Read the session and, when there is one, the quota. */
   const load = useCallback(async (): Promise<void> => {
     try {
@@ -99,7 +128,8 @@ export function DoubaoPage({ t }: { readonly t?: Translate | undefined }): React
       if (!mounted.current) return
       const signed = body?.signedIn === true
       setSignedIn(signed)
-      if (!signed) { setWindows([]); return }
+      if (!signed) { setWindows([]); setModels([]); return }
+      await loadModels()
       const quotaResponse = await fetch(POOL_DOUBAO_QUOTA_PATH, { credentials: 'same-origin' })
       const quota = await quotaResponse.json().catch(() => undefined) as QuotaBody | undefined
       if (!mounted.current) return
@@ -109,7 +139,7 @@ export function DoubaoPage({ t }: { readonly t?: Translate | undefined }): React
     } catch (cause: unknown) {
       if (mounted.current) setError(cause instanceof Error ? cause.message : String(cause))
     }
-  }, [])
+  }, [loadModels])
 
   /** Open the sign-in browser and wait for it. */
   const signIn = useCallback(async (): Promise<void> => {
@@ -147,6 +177,7 @@ export function DoubaoPage({ t }: { readonly t?: Translate | undefined }): React
       if (!mounted.current) return
       setSignedIn(false)
       setWindows([])
+      setModels([])
       setMessage('已退出登录')
     } catch (cause: unknown) {
       if (mounted.current) setError(cause instanceof Error ? cause.message : String(cause))
@@ -234,9 +265,28 @@ export function DoubaoPage({ t }: { readonly t?: Translate | undefined }): React
                   </div>
                 )
               })}
-            <p className="dsm-xdpool-doubao-hint">
-              {t?.('doubao.modelsNote') ?? '模型在对话的模型选择器里：豆包 快速 / 2.1 Turbo。'}
-            </p>
+            <div className="dsm-xdpool-doubao-models">
+              <div className="dsm-xdpool-doubao-models-head">
+                <strong>{t?.('doubao.modelsTitle') ?? '模型选择'}</strong>
+                <button type="button" className="dsm-xdpool-doubao-btn" disabled={modelBusy || models.length === 0} onClick={() => {
+                  const allEnabled = models.every(model => model.enabled)
+                  const next = new Set(disabledIds)
+                  for (const model of models) { if (allEnabled) next.add(model.id); else next.delete(model.id) }
+                  void saveModels([...next])
+                }}>{models.length > 0 && models.every(model => model.enabled) ? (t?.('doubao.disableAll') ?? '全部关闭') : (t?.('doubao.enableAll') ?? '全部开启')}</button>
+              </div>
+              {models.map(model => <label className="dsm-xdpool-doubao-model" key={model.id}>
+                <input type="checkbox" checked={model.enabled} disabled={modelBusy} onChange={event => {
+                  const next = new Set(disabledIds)
+                  if (event.currentTarget.checked) next.delete(model.id); else next.add(model.id)
+                  void saveModels([...next])
+                }} />
+                <span>{model.name}</span>
+                {model.mode === 'work' ? <small>{t?.('doubao.workMode') ?? '工作任务'}</small> : null}
+                {model.rate ? <small>{model.rate}</small> : null}
+              </label>)}
+              <p className="dsm-xdpool-doubao-hint">{t?.('doubao.modelsHint') ?? '勾选的模型会出现在对话模型选择器中；工作任务模型使用豆包工作额度。'}</p>
+            </div>
           </>
         )
         : (
@@ -252,6 +302,10 @@ export function DoubaoPage({ t }: { readonly t?: Translate | undefined }): React
 /** The card's own stylesheet, travelling with the component. */
 const DOUBAO_CSS = `
 .dsm-xdpool-doubao{display:flex;flex-direction:column;gap:11px;padding:14px 16px 16px;border-radius:14px;border:1px solid color-mix(in srgb, var(--dsw-alias-border-l2,#ffffff1f) 82%, transparent);background:color-mix(in srgb, var(--dsw-alias-bg-layer-2,#1c1e22) 70%, transparent)}
+.dsm-xdpool-doubao-models{display:flex;flex-direction:column;gap:8px;margin-top:6px}
+.dsm-xdpool-doubao-models-head{display:flex;align-items:center;justify-content:space-between}
+.dsm-xdpool-doubao-model{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dsw-alias-label-primary,#e8eaf0)}
+.dsm-xdpool-doubao-model small{color:var(--dsw-alias-label-tertiary,#8a90a0)}
 .dsm-xdpool-doubao-head{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap}
 .dsm-xdpool-doubao-id{display:flex;align-items:center;gap:10px;min-width:0}
 .dsm-xdpool-doubao-mark{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;font-size:12px;font-weight:700;letter-spacing:.02em;color:#fff;background:linear-gradient(135deg,#4B7BF5,#2E5BD8);flex:none}

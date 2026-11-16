@@ -31,7 +31,7 @@ import { useEffect, useRef, useState, type ReactElement } from 'react'
 import { BrandTile } from './brand-tile.tsx'
 import { channelIcon, channelInitials } from './channel-icons.ts'
 import { ModelFactsRow } from './model-facts-row.tsx'
-import { modelFactsFor, formatModelCapacity, type ModelFacts } from './model-facts.ts'
+import { baseName, multiplierOf, multiplierTone, modelFactsFor, formatModelCapacity, type ModelFacts } from './model-facts.ts'
 import { recommendUse } from './recommend-use.ts'
 import {
   accountsFrom,
@@ -1379,8 +1379,9 @@ export function ChannelPoolSection({ t }: { readonly t?: Translate | undefined }
                                 onChange={() => { void toggleModel(channel.id, model.id, !on) }}
                               />
                               <span className="dsm-xdpool-cpool-modelname" title={model.id}>
-                                {model.name ?? model.id}
+                                {baseName(model.name ?? model.id)}
                               </span>
+                              {multiplierOf(model.name) === undefined ? null : <span className="dsm-xdpool-cpool-tag" data-tone={multiplierTone(multiplierOf(model.name) ?? '')}>{multiplierOf(model.name)}</span>}
                               {model.isFree === true && (
                                 <span className="dsm-xdpool-cpool-tag" data-tone="free">
                                   {t?.('channelpool.modelFree') ?? 'free'}

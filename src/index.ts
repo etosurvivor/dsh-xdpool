@@ -9,6 +9,7 @@ import { creditReservesWith } from './credit-reserve.ts'
 // 暂停豆包接入；保留源码，恢复时取消此处及 apply 中的注释。
 // import { installDoubaoWork } from './doubao-work-service.ts'
 import { DoubaoAdapter, DOUBAO_PROVIDER_ID } from './doubao-adapter.ts'
+import { DoubaoModelStore, doubaoModelCatalog } from './doubao-model-store.ts'
 const DOUBAO_LANE_CHANNEL = 'doubao'
 import { registerDoubaoRoutes } from './doubao-routes.ts'
 import { readStoredSession, removeStoredSession, writeStoredSession } from './doubao-store.ts'
@@ -1262,6 +1263,7 @@ function canonicalJson(value: unknown): string {
   let doubaoSession: DoubaoSession | undefined
   let doubaoAdapterHandle: AdapterHandle | undefined
   let doubaoSessionRevision = 0
+  let invalidateDoubaoLane: (() => void) | undefined
 
   /** Point every reader at a session: the lane, and the upstream's own holder. */
   const adoptDoubaoSession = (session: DoubaoSession | undefined): void => {
@@ -1269,6 +1271,7 @@ function canonicalJson(value: unknown): string {
     doubaoSession = session
     setDoubaoSession(session)
     try { doubaoAdapterHandle?.replace([DOUBAO_PROVIDER_ID]) } catch { /* disposed during shutdown */ }
+    invalidateDoubaoLane?.()
   }
 
   /**
@@ -1284,7 +1287,11 @@ function canonicalJson(value: unknown): string {
     if (stored !== undefined && doubaoSessionRevision === restoreRevision) adoptDoubaoSession(stored)
   })
 
-  const doubaoLlm = new DoubaoAdapter(() => doubaoSession)
+  const doubaoModelStore = new DoubaoModelStore()
+  const doubaoModelsReady = doubaoModelStore.load()
+  // Observe early rejection while keeping the rejection visible to the adapter and route.
+  void doubaoModelsReady.catch((error: unknown) => ctx.logger.warn('heybash-xdpool: could not load Doubao model selection', error))
+  const doubaoLlm = new DoubaoAdapter(() => doubaoSession, { ready: doubaoModelsReady, store: doubaoModelStore })
   const hostLlm = ctx.llm as unknown as ChannelLaneLlm
   const channelLlm: ChannelLaneLlm = {
     listModels: async (provider: string) =>
@@ -1328,6 +1335,10 @@ function canonicalJson(value: unknown): string {
       | undefined,
     logger: ctx.logger,
   })
+  invalidateDoubaoLane = () => {
+    channelLane.invalidate(DOUBAO_LANE_CHANNEL)
+    void channelLane.rows().catch((error: unknown) => ctx.logger.warn('heybash-xdpool: could not refresh Doubao model list', error))
+  }
   /**
    * The gateway allowlist, re-read per request.
    *
@@ -1521,6 +1532,11 @@ function canonicalJson(value: unknown): string {
      */
     registerDoubaoRoutes(webCtx, {
       session: () => doubaoSession,
+      models: { ready: doubaoModelsReady, store: doubaoModelStore, catalog: doubaoModelCatalog, changed: () => {
+        channelLane.invalidate(DOUBAO_LANE_CHANNEL)
+        try { doubaoAdapterHandle?.replace([DOUBAO_PROVIDER_ID]) } catch { /* disposed */ }
+        void channelLane.rows().catch((error: unknown) => ctx.logger.warn('heybash-xdpool: could not refresh Doubao model list', error))
+      } },
       save: (session) => {
         adoptDoubaoSession(session)
         void writeStoredSession(session)

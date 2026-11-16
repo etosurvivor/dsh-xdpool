@@ -192,6 +192,8 @@ export const POOL_DOUBAO_SESSION_PATH = '/plugins/dsh-xdpool/doubao/session'
 
 /** The Doubao quota: the windows the account has, with their reset countdowns. */
 export const POOL_DOUBAO_QUOTA_PATH = '/plugins/dsh-xdpool/doubao/quota'
+/** Model menu and persisted selection. */
+export const POOL_DOUBAO_MODELS_PATH = '/plugins/dsh-xdpool/doubao/models'
 /**
  * The `reason` the channel document carries when the login-channel route is
  * already owned by another plugin.

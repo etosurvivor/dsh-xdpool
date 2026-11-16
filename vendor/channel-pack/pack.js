@@ -37794,6 +37794,22 @@ function buildQoderInferPayload(ask, requestId = crypto.randomUUID()) {
   };
 }
 var gluePromise = null;
+// Qoder's WASM has a limited heap; preserve system, tools, and the entire latest turn.
+const QODER_PAYLOAD_BYTE_BUDGET = 700 * 1024;
+function fitQoderPayload(payload) {
+  const measure = (value) => Buffer.byteLength(JSON.stringify(value), "utf8");
+  if (measure(payload) <= QODER_PAYLOAD_BYTE_BUDGET) return payload;
+  const out = { ...payload, messages: Array.isArray(payload.messages) ? [...payload.messages] : [] };
+  while (measure(out) > QODER_PAYLOAD_BYTE_BUDGET) {
+    const firstUser = out.messages.findIndex((message) => message?.role === "user");
+    const nextUser = firstUser < 0 ? -1 : out.messages.findIndex((message, index) => index > firstUser && message?.role === "user");
+    if (firstUser < 0 || nextUser < 0) {
+      throw new LlmError5("Qoder 请求过大；请压缩上下文或缩短当前请求后重试", "CONTEXT_WINDOW_EXCEEDED", { status: 400 });
+    }
+    out.messages.splice(firstUser, nextUser - firstUser);
+  }
+  return out;
+}
 async function getGlue() {
   gluePromise ??= createGlue();
   return gluePromise;
@@ -38013,7 +38029,7 @@ var QoderEncryptedInfer = class _QoderEncryptedInfer {
     const result = g.callPointer((stack) => {
       const host = g.writeString(this.host);
       const hostLen = g.lastLength();
-      const body = g.writeString(JSON.stringify(payload));
+      const body = g.writeString(JSON.stringify(fitQoderPayload(payload)));
       const bodyLen = g.lastLength();
       const key = g.writeString(ask.modelKey);
       const keyLen = g.lastLength();
@@ -46814,6 +46830,17 @@ var TraeAuth = class _TraeAuth extends Service5 {
     if (pool) {
       const available2 = await pool.getAvailableAccount(this.product.id, "").catch(() => void 0);
       if (available2) credential = available2.credential;
+      // Model discovery can use an enabled account that is temporarily cooling.
+      if (credential === void 0) {
+        for (const entry of pool.listAccountsByProvider(this.product.id)) {
+          if (entry.enabled === false || !entry.credentialRef) continue;
+          try {
+            const stored = await this.ctx.credentials.resolve(credentialRef6(entry.credentialRef));
+            const parsed = stored ? parseCredential5(stored.value) : void 0;
+            if (parsed?.access_token) { credential = parsed; break; }
+          } catch { /* try the next account */ }
+        }
+      }
     }
     if (credential === void 0) {
       const resolved = await this.ctx.credentials.resolve(credentialRef6(this.credentialRefName));

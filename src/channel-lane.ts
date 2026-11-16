@@ -150,6 +150,7 @@ export type ChannelLaneEvent =
 const LISTING_TTL_MS = 60_000
 
 export interface ChannelLane {
+  invalidate: (channel: string) => void
   rows: () => Promise<readonly ChannelLaneRow[]>
   resolve: (id: string) => { channel: string; modelId: string } | undefined
   turn: (input: {
@@ -181,12 +182,15 @@ export function createChannelLane(options: {
   const { llm, providers, toId, attachments, onRows, logger } = options
   const cache = new Map<string, { at: number; rows: readonly ChannelLaneRow[] }>()
   const inflight = new Map<string, Promise<readonly ChannelLaneRow[]>>()
+  const generations = new Map<string, number>()
+  let rosterGeneration = 0
 
   const fetchRows = (channel: string): Promise<readonly ChannelLaneRow[]> => {
     const hit = cache.get(channel)
     if (hit !== undefined && Date.now() - hit.at < LISTING_TTL_MS) return Promise.resolve(hit.rows)
     const running = inflight.get(channel)
     if (running !== undefined) return running
+    const generation = generations.get(channel) ?? 0
     const pending = llm.listModels(channel)
       .then(models => Promise.all(models.map(async model => {
         let supportedEfforts: readonly string[] | undefined
@@ -225,8 +229,8 @@ export function createChannelLane(options: {
         return [] as readonly ChannelLaneRow[]
       })
     const tracked = pending.then(rows => {
-      cache.set(channel, { at: Date.now(), rows })
-      inflight.delete(channel)
+      if ((generations.get(channel) ?? 0) === generation) cache.set(channel, { at: Date.now(), rows })
+      if (inflight.get(channel) === tracked) inflight.delete(channel)
       return rows
     })
     inflight.set(channel, tracked)
@@ -234,10 +238,16 @@ export function createChannelLane(options: {
   }
 
   return {
+    invalidate: (channel: string) => { rosterGeneration += 1; generations.set(channel, (generations.get(channel) ?? 0) + 1); cache.delete(channel); inflight.delete(channel) },
     rows: async () => {
-      const rows = (await Promise.all(providers().map(fetchRows))).flat()
-      await onRows?.(rows)
-      return rows
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const revision = rosterGeneration
+        const rows = (await Promise.all(providers().map(fetchRows))).flat()
+        if (revision !== rosterGeneration) continue
+        await onRows?.(rows)
+        return rows
+      }
+      throw new Error('channel model list changed while refreshing')
     },
     resolve: (id: string) => {
       const separator = id.indexOf(':')

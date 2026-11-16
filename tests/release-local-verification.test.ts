@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -18,9 +18,11 @@ function decision(branch: string, label: string): string {
   } finally { rmSync(dir, { recursive: true, force: true }) }
 }
 describe('release automation waits for local desktop verification', () => {
-  it('does not label release PRs for automatic merge', () => {
-    const config = JSON.parse(readFileSync(new URL('../release-please-config.json', import.meta.url), 'utf8'))
-    expect(config.packages['.'].labels ?? []).not.toContain('automerge')
+  it('does not run the retired Release Please workflow on pushes', () => {
+    expect(existsSync(new URL('../.github/workflows/release-please.yml', import.meta.url))).toBe(false)
+    const release = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8')
+    expect(release).toMatch(/push:\s*\n\s*tags:/u)
+    expect(release).toContain("- 'heybash-v*'")
   })
   it('blocks a release PR even with an automerge label and permits ordinary labelled PRs', () => {
     expect(decision('release-please--branches--main', 'true')).toContain('allow=false')

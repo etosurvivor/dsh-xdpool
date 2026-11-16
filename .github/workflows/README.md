@@ -4,6 +4,8 @@
 ## 这个工作流做什么
 完成下方本机验收后，推送 `heybash-v*`（兼容 `v*`）标签会触发 npm 发布工作流。发布 PR 不自动合并。
 npm 配置了对应 Trusted Publisher 时，工作流可通过 OIDC 发布；未绑定或授权不足时仍需维护者使用 npm 登录和安全密钥验证。
+
+本仓库由维护者手动维护版本和 CHANGELOG；旧 Release Please 自动生成 PR 的工作流已停用，避免依赖未配置的 `AUTOMERGE_TOKEN`。普通 PR 的自动合并是另一套流程，不参与 npm 版本发布。
 ## 为什么用它（而不是 `npm publish --otp=`）
 本机账号的 2FA 绑的是**安全密钥（passkey）**，而 npm 命令行的 `--otp`
 只接受**认证器 6 位数字码**，两者不通用；npm 的暂存批准页面又没有网页入口。

@@ -11,7 +11,7 @@
 ##     Decide 那一步，别顺手删条件。
 ##   - 合并用 PAT（AUTOMERGE_TOKEN）而不是 GITHUB_TOKEN：
 ##     GITHUB_TOKEN 合并产生的事件**不会触发**后续 workflow，
-##     用它会把「合并 → release-please 刷版」这条链静默掐断。
+##     因此普通 PR 的自动合并仍使用 PAT；它与手动打标签的 npm 发布无关。
 name: Auto-merge
 
 on:
@@ -100,7 +100,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::error::secret AUTOMERGE_TOKEN 未配置。GITHUB_TOKEN 合并不会触发 release-please，故拒绝降级执行。"
+            echo "::error::secret AUTOMERGE_TOKEN 未配置，无法执行普通 PR 自动合并。"
             exit 1
           fi
           # --auto：等 required checks 全绿后由 GitHub 真正合并，CI 没过就不会合

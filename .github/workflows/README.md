@@ -2,7 +2,7 @@
 > 「workflow filename」，必须与下方 `name` 所在文件的文件名完全一致 —— 也就是
 > `release.yml`（只填文件名，不带路径，但要带 `.yml`）。
 ## 这个工作流做什么
-完成下方本机验收后，推送 `v*` 标签会触发 npm 发布工作流。发布 PR 不自动合并。
+完成下方本机验收后，推送 `heybash-v*`（兼容 `v*`）标签会触发 npm 发布工作流。发布 PR 不自动合并。
 npm 配置了对应 Trusted Publisher 时，工作流可通过 OIDC 发布；未绑定或授权不足时仍需维护者使用 npm 登录和安全密钥验证。
 ## 为什么用它（而不是 `npm publish --otp=`）
 本机账号的 2FA 绑的是**安全密钥（passkey）**，而 npm 命令行的 `--otp`
@@ -32,9 +32,9 @@ cd D:\DSH\dsh-xdpool
 git add -A
 git commit -m "release: x.y.z"
 # 3. 打 tag 并推送 —— 这一步就会触发自动发布
-git tag vX.Y.Z
+git tag heybash-vX.Y.Z
 git push origin main
-git push origin vX.Y.Z
+git push origin heybash-vX.Y.Z
 ```
 推送后到仓库的 **Actions** 页看进度，几十秒即可在 npm 上看到新版本。
 

@@ -29,3 +29,19 @@ describe('release automation waits for local desktop verification', () => {
     expect(decision('fix/ordinary', 'false')).toContain('allow=false')
   })
 })
+
+describe('release tags', () => {
+  const release = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8')
+  const tagBlock = release.match(/      - name: Verify the tag matches package\.json[\s\S]*?        run: \|\n([\s\S]*?)(?=\n      - name:)/u)?.[1]
+  if (tagBlock === undefined) throw new Error('release tag verification script missing')
+  const tagScript = tagBlock.split('\n').map(line => line.replace(/^ {10}/u, '')).join('\n')
+  it('accepts the project tag and the legacy tag only when they match the package version', () => {
+    expect(release).toContain("- 'heybash-v*'")
+    const version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version as string
+    const run = (ref: string) => spawnSync('bash', ['-c', tagScript], { encoding: 'utf8', env: { ...process.env, GITHUB_REF_NAME: ref } }).status
+    expect(run(`heybash-v${version}`)).toBe(0)
+    expect(run(`v${version}`)).toBe(0)
+    expect(run('heybash-v0.0.0')).not.toBe(0)
+    expect(run(`heybash-vv${version}`)).not.toBe(0)
+  })
+})

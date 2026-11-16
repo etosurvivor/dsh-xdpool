@@ -306,6 +306,7 @@ export const POOL_CARD_CSS = `
 .dsm-xdpool-usage-rows{display:flex;flex-direction:column;gap:6px}
 .dsm-xdpool-usage-row{display:flex;flex-direction:column;gap:2px;padding:8px 10px;border:1px solid var(--dsw-alias-border-subtle,rgba(127,127,127,.25));border-radius:8px}
 .dsm-xdpool-usage-model{font-size:12px;font-weight:600;word-break:break-all}
+.dsm-xdpool-usage-channel{font-size:11px;font-weight:500;color:var(--dsw-alias-text-secondary,#737983);margin-left:6px;word-break:normal}
 .dsm-xdpool-usage-numbers{color:var(--dsw-alias-label-tertiary,#999);font-size:11px;line-height:17px;word-break:break-word}
 .dsm-xdpool-usage-note{margin:0;color:var(--dsw-alias-label-tertiary,#999);font-size:11px;line-height:17px}
 .dsm-xdpool-sidebar-row-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px}

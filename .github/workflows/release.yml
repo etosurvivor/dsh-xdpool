@@ -16,6 +16,7 @@ on:
   push:
     tags:
       - 'v*'
+      - 'heybash-v*'
   # 手动触发默认只跑构建+测试，不发版——这样可以用它验证 CI 而不误发 npm。
   # 确实要就着手动重发时，勾上 publish 输入。
   workflow_dispatch:
@@ -88,7 +89,11 @@ jobs:
         # 版本号对不上就中止：宁可让发布失败，也不要发出一个名不副实的版本
         run: |
           PKG_VERSION="$(node -p "require('./package.json').version")"
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          case "$GITHUB_REF_NAME" in
+            heybash-v*) TAG_VERSION="${GITHUB_REF_NAME#heybash-v}" ;;
+            v*) TAG_VERSION="${GITHUB_REF_NAME#v}" ;;
+            *) echo "::error::unsupported release tag $GITHUB_REF_NAME"; exit 1 ;;
+          esac
           echo "package.json=$PKG_VERSION  tag=$TAG_VERSION"
           if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
             echo "::error::tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION"

@@ -49,6 +49,7 @@ import { POOL_CARD_CSS } from './styles.ts'
 import { POOL_CARD_AVATAR } from './avatar.ts'
 import { PoolShell, PageHero, initialShellTab, rememberedShellTab } from './shell.tsx'
 import { LedgerPage } from './LedgerPage.tsx'
+import { usageChannelLabel } from './usage-channel.ts'
 import { AggregatePage } from './AggregatePage.tsx'
 import { ChannelsPage } from './ChannelsPage.tsx'
 import { RoutingPage } from './RoutingPage.tsx'
@@ -1585,8 +1586,8 @@ export function PoolCard({ t, settingsScope }: PoolCardProps) {
                       : <p className="dsm-xdpool-usage-note">{t?.('row.usageNotReported') ?? 'The gateway reported no token counts.'}</p>}
                     <div className="dsm-xdpool-usage-rows">
                       {usage.rows.map(row => (
-                        <div className="dsm-xdpool-usage-row" key={`${row.region}:${row.model}`}>
-                          <span className="dsm-xdpool-usage-model">{row.model}</span>
+                        <div className="dsm-xdpool-usage-row" key={JSON.stringify([row.channel, row.region, row.model])}>
+                          <span className="dsm-xdpool-usage-model">{row.model} <span className="dsm-xdpool-usage-channel">{usageChannelLabel(row, channels, t)}</span></span>
                           <span className="dsm-xdpool-usage-numbers">
                             {t?.('row.usageTokens', {
                               input: formatNumber(row.inputTokens),

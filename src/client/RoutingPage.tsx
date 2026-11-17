@@ -544,7 +544,8 @@ export function ChainRow({
  * inventing a second one here would make the same vendor look like two.
  */
 function ownerName(owner: string, t?: Translate | undefined): string {
-  if (owner === 'workbuddy') return t?.('route.ownerPool') ?? 'Heybash（WorkBuddy）'
+  if (owner === 'workbuddy') return t?.('route.ownerPool') ?? 'WorkBuddy 国内版'
+  if (owner === 'xdpool-global') return t?.('route.ownerGlobal') ?? 'WorkBuddy 国际版'
   return owner
 }
 /**

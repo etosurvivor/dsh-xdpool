@@ -2008,10 +2008,10 @@ function withBareModelId(raw: string, modelId: string): string {
       })
       if (member === undefined) return undefined
       const channel = member.host === true
-        ? REGISTERED_CHANNELS.find(value => value.id === member.channel)?.name ?? member.channel ?? 'Channel'
+        ? member.channel === 'xdpool-global' ? 'WorkBuddy 国际版' : REGISTERED_CHANNELS.find(value => value.id === member.channel)?.name ?? member.channel ?? 'Channel'
         : member.aggregate
           ? getProvider(member.providerId ?? '')?.name ?? member.providerId ?? 'Provider'
-          : 'WorkBuddy'
+          : 'WorkBuddy 国内版'
       return { channel, model: member.name }
     },
     close: () =>

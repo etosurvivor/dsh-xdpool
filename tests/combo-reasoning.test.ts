@@ -156,6 +156,20 @@ describe('image routing through mixed host members', () => {
 })
 
 describe('saved route status compatibility', () => {
+  it('keeps domestic and global WorkBuddy as distinct selectable model members', async () => {
+    const { combosStatusOf } = await import('../src/index.ts')
+    const model = 'deepseek-v4.1-flash'
+    const host = [{ id: `xdpool-global:${model}`, channel: 'xdpool-global', modelId: model, name: 'DeepSeek global', contextWindow: 400_000 }]
+    const store = { version: 1 as const, combos: [{ name: 'test', models: [model, `xdpool-global:${model}`] }] }
+    const catalog = new AggregateCatalog(() => store, () => [poolRow()], () => host)
+    await catalog.refresh()
+    const result = combosStatusOf(store, catalog, [poolRow()], host)
+    expect(result.combos[0]?.models).toEqual([model, `xdpool-global:${model}`])
+    expect(result.combos[0]?.platforms).toEqual([{ owner: 'workbuddy', models: [model] }, { owner: 'xdpool-global', models: [`xdpool-global:${model}`] }])
+    expect(result.combos[0]?.missing).toEqual([])
+    expect(result.candidates.map(row => [row.owner, row.id])).toContainEqual(['xdpool-global', `xdpool-global:${model}`])
+    expect(result.combos[0]?.contextWindow).toBe(131072)
+  })
   it('normalizes legacy channel identifiers without marking reachable models missing', async () => {
     const { combosStatusOf } = await import('../src/index.ts')
     const host = [{ id: 'codearts:deepseek-v4.1-flash', channel: 'codearts', modelId: 'deepseek-v4.1-flash', name: 'Flash', supportedEfforts: ['high'], supportsImages: true }]

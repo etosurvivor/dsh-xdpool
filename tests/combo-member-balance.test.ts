@@ -48,6 +48,13 @@ async function gateway(models: Record<string, string[]>, members: string[], fail
 }
 
 describe('balanced route members', () => {
+  it('routes a global WorkBuddy member to its own host provider and reports its region', async () => {
+    const served: string[] = []
+    const call = await gateway({ 'xdpool-global': ['deepseek-v4.1-flash'] }, ['xdpool-global:deepseek-v4.1-flash'], new Set(), served)
+    await call(false, 'global-task')
+    expect(served).toEqual(['xdpool-global:deepseek-v4.1-flash'])
+    expect(await call.shim.routeLastUsed('global-task', 'combo:balanced')).toEqual({ channel: 'WorkBuddy 国际版', model: 'deepseek-v4.1-flash' })
+  })
   it('reports the last successful channel and model for the requested session only', async () => {
     const served: string[] = []
     const failed = new Set<string>()

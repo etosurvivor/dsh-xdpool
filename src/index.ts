@@ -1322,9 +1322,14 @@ function canonicalJson(value: unknown): string {
         ctx.logger?.warn?.('heybash-xdpool: could not refresh channel capabilities:', error)
       }
     },
-    providers: () => REGISTERED_CHANNELS
-      .map(channel => channel.id)
-      .filter(id => channelListableAsRows(id, POOL_OWNED_CHANNELS)),
+    providers: () => [
+      ...REGISTERED_CHANNELS.map(channel => channel.id)
+        .filter(id => channelListableAsRows(id, POOL_OWNED_CHANNELS)),
+      // Domestic pool IDs remain bare for old chains. The separately registered
+      // global adapter provides region-scoped accounts, catalog and transport;
+      // including it as a host member keeps identically named models distinct.
+      XDPOOL_GLOBAL_PROVIDER,
+    ],
     toId: (channel, modelId) => `${channel}:${modelId}`,
     // An OpenAI `image_url` cannot reach a channel model as a URL: the host's
     // typed `ImageBlock` names a durable attachment, so the bytes go to the

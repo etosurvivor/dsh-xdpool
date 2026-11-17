@@ -3341,6 +3341,10 @@ interface WorkBuddyShim {
   ready: Promise<void>;
   baseUrl(): string;
   token(): string;
+  routeLastUsed(sessionId: string, chainId: string): Promise<{
+    channel: string;
+    model: string;
+  } | undefined>;
   /**
    * Everything the gateway could serve, with display names.
    *
@@ -3476,6 +3480,10 @@ interface WorkBuddyShimOptions {
    * for other machines.
    */
   lanModels?: () => readonly string[] | undefined;
+  /** Optional private state file for session-to-model assignments. */
+  comboAffinityPath?: string;
+  /** Resolve an active child session to its parent when the host exposes it. */
+  parentSessionOf?: (sessionId: string) => string | undefined;
 }
 export declare function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShim;
 /**
@@ -4368,6 +4376,10 @@ export declare function writePreferredId(accountId: string | undefined, path?: s
 /** Constructor dependencies — a narrow slice of the pool runtime. */
 interface PoolStatusRouteOptions {
   pool: WorkBuddyAccountPool;
+  routeLastUsed?: (sessionId: string, chainId: string) => Promise<{
+    channel: string;
+    model: string;
+  } | undefined>;
   /** Re-announce models after a rescan changes region availability. */
   onPoolChanged?: () => void;
   /** One catalog per region; the card reads the one for its active tab. */

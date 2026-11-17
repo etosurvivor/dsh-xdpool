@@ -294,7 +294,9 @@ function toComboModel(row: ComboModelRow, baseUrl: string, providerId: string): 
     maxTokens: row.maxOutputTokens,
     reasoning: map !== undefined,
     ...map === undefined ? {} : { thinkingLevelMap: map },
-    compat: { supportsReasoningEffort: map !== undefined },
+    // Carry the host's stable session identity to our local shim, independently
+    // of conversation text, for task-local member affinity.
+    compat: { supportsReasoningEffort: map !== undefined, sendSessionAffinityHeaders: true, sessionAffinityFormat: 'openrouter' },
   } as unknown as Model<Api>
 }
 /**

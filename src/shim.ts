@@ -15,17 +15,22 @@
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { Readable, Transform } from 'node:stream'
 import type { WorkBuddyAccount, WorkBuddyAccountPool } from './accounts.ts'
 import type { WorkBuddyCatalog } from './catalog.ts'
 import { parseRateLimitReset, WorkBuddyUpstreamClient, type ChatStreamResult, type UpstreamErrorKind, type WorkBuddyRegion } from './upstream.ts'
 import { compactWithSummary, estimateMessagesTokens, hardTruncate, type ChatMessage } from './context-budget.ts'
 import { AggregateError, forwardAggregateStreamed, resolveAggregateProvider, type AggregateCatalog } from './aggregate.ts'
-import { parseProviderModelId } from './providers.ts'
+import { getProvider, parseProviderModelId } from './providers.ts'
+import { REGISTERED_CHANNELS } from './channels.ts'
 import { withMemberReasoningEffort } from './reasoning.ts'
 import {
   COMBO_CHANNEL,
   comboChain,
+  settleComboSuccess,
+  type ComboRotationTicket,
   isComboId,
   isComboRow,
   resolveComboMember,
@@ -54,6 +59,7 @@ export interface WorkBuddyShim {
   ready: Promise<void>
   baseUrl(): string
   token(): string
+  routeLastUsed(sessionId: string, chainId: string): Promise<{ channel: string; model: string } | undefined>
   /**
    * Everything the gateway could serve, with display names.
    *
@@ -241,6 +247,10 @@ export interface WorkBuddyShimOptions {
    * for other machines.
    */
   lanModels?: () => readonly string[] | undefined
+  /** Optional private state file for session-to-model assignments. */
+  comboAffinityPath?: string
+  /** Resolve an active child session to its parent when the host exposes it. */
+  parentSessionOf?: (sessionId: string) => string | undefined
 }
 const REQUEST_BODY_LIMIT = 64 * 1024 * 1024
 /**
@@ -419,6 +429,14 @@ function conversationKeyOf(raw: string): string | undefined {
     return undefined
   }
 }
+
+/** A host-provided session identity, hashed before it is held in memory. */
+function routingSessionId(req: IncomingMessage): string | undefined {
+  const header = req.headers['x-session-id'] ?? req.headers['session_id'] ?? req.headers['x-session-affinity']
+  if (typeof header !== 'string' || header.length === 0 || header.length > 1024) return undefined
+  return header
+}
+function routingSessionKey(id: string): string { return createHash('sha256').update(id).digest('hex') }
 function readBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
@@ -441,6 +459,35 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
   const region = options.region
   const logger = options.logger
   const aggregate = options.aggregate
+  // Provisional bindings are installed before the first await so concurrent
+  // requests in one session start with the same member. A failed first request
+  // does not become a permanent assignment. No conversation text is stored.
+  const comboAffinities = new Map<string, { member: string; confirmed: boolean; reservation?: ComboRotationTicket }>()
+  const lastRoutes = new Map<string, string>()
+  const COMBO_AFFINITY_LIMIT = 5000
+  if (options.comboAffinityPath !== undefined) {
+    try {
+      const parsed = JSON.parse(readFileSync(options.comboAffinityPath, 'utf8')) as { bindings?: unknown }
+      if (typeof parsed.bindings === 'object' && parsed.bindings !== null && !Array.isArray(parsed.bindings)) {
+        for (const [key, member] of Object.entries(parsed.bindings).slice(-COMBO_AFFINITY_LIMIT)) {
+          if (key.length <= 1100 && typeof member === 'string' && member.length > 0 && member.length <= 1024) {
+            comboAffinities.set(key, { member, confirmed: true })
+          }
+        }
+      }
+    } catch { /* First run or invalid state: choose a fresh member. */ }
+  }
+  const saveComboAffinities = (): void => {
+    const path = options.comboAffinityPath
+    if (path === undefined) return
+    try {
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+      const bindings = Object.fromEntries([...comboAffinities].filter(([, value]) => value.confirmed).map(([key, value]) => [key, value.member]))
+      const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
+      writeFileSync(tmp, JSON.stringify({ version: 1, bindings }), { encoding: 'utf8', mode: 0o600 })
+      renameSync(tmp, path)
+    } catch (error) { logger?.warn?.('heybash-xdpool: could not save route affinity', error) }
+  }
   const extra = options.extra
   const channels = options.channels
   const lanModels = options.lanModels
@@ -1081,6 +1128,8 @@ function withBareModelId(raw: string, modelId: string): string {
     raw: string,
     row: ComboModelRow,
     signal: AbortSignal,
+    sessionKey: string | undefined,
+    parentKey: string | undefined,
   ): Promise<void> {
     const store = aggregate?.readStore()
     const sources = {
@@ -1095,7 +1144,27 @@ function withBareModelId(raw: string, modelId: string): string {
       writeOpenAIError(res, 400, 'context_length_exceeded', `chain ${row.id}: model context window changed from ${row.contextWindow} to ${refreshed.contextWindow}; retry with the refreshed context limit`)
       return
     }
-    let members = comboChain(row)
+    const affinityKey = sessionKey === undefined || row.strategy !== 'round-robin' ? undefined : `${row.id}:${sessionKey}`
+    let binding = affinityKey === undefined ? undefined : comboAffinities.get(affinityKey)
+    if (binding !== undefined && !row.models.includes(binding.member)) {
+      comboAffinities.delete(affinityKey!)
+      saveComboAffinities()
+      binding = undefined
+    }
+    let reservation: ComboRotationTicket | undefined
+    let ordered = comboChain(row, binding === undefined
+      ? { onReservation: ticket => { reservation = ticket } }
+      : { peek: true })
+    // A child is an independent session: give other models priority over the
+    // parent's selected member, but retain the parent as a final fallback.
+    if (parentKey !== undefined && row.strategy === 'round-robin') {
+      const parentMember = comboAffinities.get(`${row.id}:${parentKey}`)?.member
+      if (parentMember !== undefined && ordered.length > 1) {
+        ordered = [...ordered.filter(id => id !== parentMember), ...ordered.filter(id => id === parentMember)]
+      }
+    }
+    const preferred = binding?.member
+    let members = (preferred === undefined ? ordered : [preferred, ...ordered.filter(id => id !== preferred)])
       .map(modelId => resolveComboMember(modelId, sources))
       .filter((member): member is ComboMember => member !== undefined)
     const body = JSON.parse(raw) as { messages?: { content?: unknown }[] }
@@ -1116,6 +1185,49 @@ function withBareModelId(raw: string, modelId: string): string {
       // gateway that has never heard of it.
       writeOpenAIError(res, 503, 'combo_empty', `chain ${row.id} has no member model available right now`)
       return
+    }
+    if (affinityKey !== undefined && binding === undefined) {
+      binding = { member: members[0]!.modelId, confirmed: false, ...(reservation === undefined ? {} : { reservation }) }
+      comboAffinities.set(affinityKey, binding)
+      while (comboAffinities.size > COMBO_AFFINITY_LIMIT) {
+        const oldest = comboAffinities.keys().next().value
+        if (oldest === undefined) break
+        comboAffinities.delete(oldest)
+      }
+    }
+    const observedMember = binding?.member
+    const settleMember = (memberId: string): void => {
+      if (sessionKey !== undefined) {
+        const key = `${row.id}:${sessionKey}`
+        lastRoutes.delete(key)
+        lastRoutes.set(key, memberId)
+        while (lastRoutes.size > COMBO_AFFINITY_LIMIT) {
+          const oldest = lastRoutes.keys().next().value
+          if (oldest === undefined) break
+          lastRoutes.delete(oldest)
+        }
+      }
+      if (affinityKey === undefined || binding === undefined) {
+        settleComboSuccess(row, reservation, memberId)
+        return
+      }
+      if (comboAffinities.get(affinityKey) !== binding) return
+      // A concurrent call already switched this session. An older response
+      // must not silently move it back to the previous member.
+      if (binding.confirmed && binding.member !== observedMember) return
+      const isNewAssignment = !binding.confirmed || binding.member !== memberId
+      if (binding.confirmed && binding.member !== memberId && reservation === undefined) {
+        comboChain(row, { onReservation: ticket => { reservation = ticket } })
+      }
+      binding.member = memberId
+      binding.confirmed = true
+      comboAffinities.delete(affinityKey)
+      comboAffinities.set(affinityKey, binding)
+      if (isNewAssignment) {
+        settleComboSuccess(row, reservation ?? binding.reservation, memberId)
+        delete binding.reservation
+        saveComboAffinities()
+      }
     }
     const attempts: string[] = []
     let last: { kind: string; status: number; message: string } | undefined
@@ -1141,7 +1253,7 @@ function withBareModelId(raw: string, modelId: string): string {
     // turn reached the gateway with no session headers and was refused with
     // 11128 in exactly the same way the single-model path was. Derived from the
     // same body, so every member of the chain files under one conversation.
-    const conversationKey = conversationKeyOf(raw)
+    const conversationKey = sessionKey ?? conversationKeyOf(raw)
     for (const member of members) {
       if (signal.aborted) return
       attempts.push(member.modelId)
@@ -1271,6 +1383,7 @@ function withBareModelId(raw: string, modelId: string): string {
         }
         // Buffered payloads become the response, exactly as the aggregate branch
         // does below.
+        settleMember(member.modelId)
         if (wantsNonStreaming(raw)) {
           writeJson(res, 200, bufferedFramesToCompletion(hostFrames, member.modelId))
           return
@@ -1333,10 +1446,12 @@ function withBareModelId(raw: string, modelId: string): string {
               pool,
               memberUsage,
               member.modelId,
+              () => settleMember(member.modelId),
             )
             return
           }
-          await serveSuccessfulStream(res, account, result, logger, refreshBalance, pool, memberUsage)
+          await serveSuccessfulStream(res, account, result, logger, refreshBalance, pool, memberUsage,
+            () => settleMember(member.modelId))
           return
         }
         last = { kind: result.kind, status: result.status, message: result.message }
@@ -1401,6 +1516,7 @@ function withBareModelId(raw: string, modelId: string): string {
       // A member answered. Say which one when the chain had to skip anything:
       // the caller only sees the content, so without this line nobody can tell
       // that the answer came from the third choice rather than the first.
+      settleMember(member.modelId)
       if (switches.length > 0) {
         logger?.info?.(
           `heybash-xdpool: chain ${row.id} served by ${member.modelId} after skipping `
@@ -1429,6 +1545,9 @@ function withBareModelId(raw: string, modelId: string): string {
     // the whole attempt list: a chain of one rate-limited member must not read
     // as "no credential", and a chain of three silently-empty ones must not read
     // as one model's 401.
+    if (affinityKey !== undefined && binding !== undefined && !binding.confirmed && comboAffinities.get(affinityKey) === binding) {
+      comboAffinities.delete(affinityKey)
+    }
     const kind = last?.kind ?? 'combo_empty'
     const status = last?.status ?? 503
     // The trace goes in the message, not only the log: this is the one response
@@ -1496,7 +1615,14 @@ function withBareModelId(raw: string, modelId: string): string {
       ? undefined
       : aggregate.catalog.findCombo(modelId)
     if (comboRow !== undefined) {
-      await serveComboCompletion(res, raw, comboRow, controller.signal)
+      const session = routingSessionId(req)
+      let parent: string | undefined
+      if (session !== undefined) {
+        try { parent = options.parentSessionOf?.(session) } catch { /* unavailable host service */ }
+      }
+      await serveComboCompletion(res, raw, comboRow, controller.signal,
+        session === undefined ? undefined : routingSessionKey(session),
+        parent === undefined || parent === '' || parent.length > 1024 ? undefined : routingSessionKey(parent))
       return
     }
     // A `combo:` id that no longer resolves — the chain was disabled, or every
@@ -1868,6 +1994,26 @@ function withBareModelId(raw: string, modelId: string): string {
     baseUrl,
     roster,
     token: () => SHARED_SECRET,
+    routeLastUsed: async (sessionId, chainId) => {
+      if (sessionId === '' || sessionId.length > 1024 || !isComboId(chainId)) return undefined
+      const key = `${chainId}:${routingSessionKey(sessionId)}`
+      const bound = comboAffinities.get(key)
+      const id = lastRoutes.get(key) ?? (bound?.confirmed === true ? bound.member : undefined)
+      const row = aggregate?.catalog.findCombo(chainId)
+      if (id === undefined || row === undefined || !row.models.includes(id)) return undefined
+      const member = resolveComboMember(id, {
+        pool: catalog.current(),
+        aggregate: aggregate?.catalog.providerRows() ?? [],
+        host: channels === undefined ? [] : await channels.rows(),
+      })
+      if (member === undefined) return undefined
+      const channel = member.host === true
+        ? REGISTERED_CHANNELS.find(value => value.id === member.channel)?.name ?? member.channel ?? 'Channel'
+        : member.aggregate
+          ? getProvider(member.providerId ?? '')?.name ?? member.providerId ?? 'Provider'
+          : 'WorkBuddy'
+      return { channel, model: member.name }
+    },
     close: () =>
       new Promise<void>((resolve, reject) => {
         server.close(() => resolve())
@@ -1956,6 +2102,7 @@ async function serveSuccessfulStream(
   refreshBalance: (account: WorkBuddyAccount) => Promise<void>,
   pool: WorkBuddyAccountPool,
   usage: UsageContext | undefined,
+  onSuccess?: () => void,
 ): Promise<void> {
   logger?.info?.(`heybash-xdpool: served by ${account.label}`)
   // Only now is this account the one actually serving the user: a request
@@ -1992,6 +2139,7 @@ async function serveSuccessfulStream(
   const finish = (ok: boolean): void => {
     if (recorded) return
     recorded = true
+    if (ok) onSuccess?.()
     if (usage?.recorder === undefined) return
     usage.recorder.record({
       channel: 'workbuddy',
@@ -2084,6 +2232,7 @@ async function serveSuccessfulJson(
   pool: WorkBuddyAccountPool,
   usage: UsageContext | undefined,
   modelId: string | undefined,
+  onSuccess?: () => void,
 ): Promise<void> {
   logger?.info?.(`heybash-xdpool: served by ${account.label} (non-streaming)`)
   pool.noteServed(account.id)
@@ -2094,6 +2243,7 @@ async function serveSuccessfulJson(
   const finish = (ok: boolean): void => {
     if (recorded) return
     recorded = true
+    if (ok) onSuccess?.()
     if (usage?.recorder === undefined) return
     usage.recorder.record({
       channel: 'workbuddy',

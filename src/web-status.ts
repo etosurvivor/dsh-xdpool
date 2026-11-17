@@ -54,6 +54,7 @@ import {
   POOL_RESET_COOLDOWN_PATH,
   POOL_RESCAN_PATH,
   POOL_STATUS_PATH,
+  POOL_ROUTE_LAST_USED_PATH,
   POOL_USAGE_PATH,
   type PoolWebAccount,
   type PoolWebAccountToggle,
@@ -96,6 +97,7 @@ export type { PoolWebStatus }
 /** Constructor dependencies — a narrow slice of the pool runtime. */
 export interface PoolStatusRouteOptions {
   pool: WorkBuddyAccountPool
+  routeLastUsed?: (sessionId: string, chainId: string) => Promise<{ channel: string; model: string } | undefined>
   /** Re-announce models after a rescan changes region availability. */
   onPoolChanged?: () => void
   /** One catalog per region; the card reads the one for its active tab. */
@@ -1075,6 +1077,20 @@ export function registerPoolStatusRoute(ctx: Context, deps: PoolStatusRouteOptio
         }
       },
     })
+    const disposeRouteLastUsed = ctx.webServer.register({
+      kind: 'exact',
+      path: POOL_ROUTE_LAST_USED_PATH,
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
+        if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
+        const params = new URL(req.url ?? '/', 'http://localhost').searchParams
+        const session = params.get('session') ?? ''
+        const chain = params.get('chain') ?? ''
+        if (session === '' || session.length > 1024 || !chain.startsWith('combo:')) return json(res, 400, { error: 'invalid session or route' })
+        try { json(res, 200, { route: await deps.routeLastUsed?.(session, chain) ?? null }) }
+        catch (error: unknown) { json(res, 500, { error: safeMessage(error) }) }
+      },
+    })
     /**
      * Re-fetch the upstream model catalog.
      *
@@ -1693,6 +1709,7 @@ export function registerPoolStatusRoute(ctx: Context, deps: PoolStatusRouteOptio
       disposeRescan()
       disposeStatus()
       disposeUsage()
+      disposeRouteLastUsed()
     }
   }, 'heybash-xdpool: Web status route')
 }

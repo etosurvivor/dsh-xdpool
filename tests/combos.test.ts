@@ -22,7 +22,7 @@ import type { WorkBuddyAccountPool } from '../src/accounts.ts'
 import type { WorkBuddyUpstreamClient, WorkBuddyRegion } from '../src/upstream.ts'
 import { createWorkBuddyShim } from '../src/shim.ts'
 import { AggregateCatalog } from '../src/aggregate.ts'
-import { buildComboCatalog, comboChain, comboId, normalizeCombos, resetComboRotation } from '../src/combos.ts'
+import { buildComboCatalog, comboChain, comboId, normalizeCombos, resetComboRotation, settleComboSuccess, type ComboRotationTicket } from '../src/combos.ts'
 import type { AggregateStore } from '../src/store.ts'
 const PROVIDER_ID = 'agnes'
 const MODEL_ID = 'agnes-2.0-flash'
@@ -318,6 +318,62 @@ describe('the chain catalog refuses to advertise what it cannot serve', () => {
   })
 })
 describe('round-robin rotates, fallback does not', () => {
+  it('continues after the member that actually served a fallback', () => {
+    resetComboRotation()
+    const [row] = buildComboCatalog(normalizeCombos([{ name: 'rr-failed', models: ['a', 'b', 'c'], strategy: 'round-robin', stickyLimit: 1 }]), {
+      pool: ['a', 'b', 'c'].map(id => ({ ...POOL_MODEL, id })), aggregate: [],
+    })
+    if (row === undefined) throw new Error('chain produced no row')
+    let ticket: ComboRotationTicket | undefined
+    const first = comboChain(row, { onReservation: value => { ticket = value } })
+    expect(first).toEqual(['a', 'b', 'c'])
+    settleComboSuccess(row, ticket, 'b') // a failed; b answered
+    expect(comboChain(row)).toEqual(['c', 'a', 'b'])
+    resetComboRotation()
+  })
+
+  it('counts the fallback success towards the configured consecutive turns', () => {
+    resetComboRotation()
+    const [row] = buildComboCatalog(normalizeCombos([{ name: 'rr-sticky', models: ['a', 'b', 'c'], strategy: 'round-robin', stickyLimit: 2 }]), {
+      pool: ['a', 'b', 'c'].map(id => ({ ...POOL_MODEL, id })), aggregate: [],
+    })
+    if (row === undefined) throw new Error('chain produced no row')
+    let ticket: ComboRotationTicket | undefined
+    expect(comboChain(row, { onReservation: value => { ticket = value } })).toEqual(['a', 'b', 'c'])
+    settleComboSuccess(row, ticket, 'b')
+    expect(comboChain(row)).toEqual(['b', 'c', 'a'])
+    expect(comboChain(row)).toEqual(['c', 'a', 'b'])
+    resetComboRotation()
+  })
+
+  it('does not let an older concurrent completion overwrite a later reservation', () => {
+    resetComboRotation()
+    const [row] = buildComboCatalog(normalizeCombos([{ name: 'rr-parallel', models: ['a', 'b', 'c'], strategy: 'round-robin', stickyLimit: 1 }]), {
+      pool: ['a', 'b', 'c'].map(id => ({ ...POOL_MODEL, id })), aggregate: [],
+    })
+    if (row === undefined) throw new Error('chain produced no row')
+    let older: ComboRotationTicket | undefined
+    expect(comboChain(row, { onReservation: value => { older = value } })).toEqual(['a', 'b', 'c'])
+    expect(comboChain(row)).toEqual(['b', 'c', 'a'])
+    settleComboSuccess(row, older, 'c')
+    expect(comboChain(row)).toEqual(['c', 'a', 'b'])
+    resetComboRotation()
+  })
+  it('uses successes from concurrent completions to balance future fallback choices', () => {
+    resetComboRotation()
+    const [row] = buildComboCatalog(normalizeCombos([{ name: 'rr-history', models: ['a', 'b', 'c'], strategy: 'round-robin', stickyLimit: 1 }]), {
+      pool: ['a', 'b', 'c'].map(id => ({ ...POOL_MODEL, id })), aggregate: [],
+    })
+    if (row === undefined) throw new Error('chain produced no row')
+    const tickets: ComboRotationTicket[] = []
+    for (let n = 0; n < 3; n++) comboChain(row, { onReservation: ticket => { tickets.push(ticket) } })
+    settleComboSuccess(row, tickets[0], 'b') // a failed and fell back to b
+    settleComboSuccess(row, tickets[1], 'b')
+    settleComboSuccess(row, tickets[2], 'c')
+    // The next primary is still a, but c has served less often than b.
+    expect(comboChain(row)).toEqual(['a', 'c', 'b'])
+    resetComboRotation()
+  })
   it('keeps one member for stickyLimit turns, then advances', () => {
     resetComboRotation()
     const chains = normalizeCombos([{ name: 'rr', models: ['a', 'b', 'c'], strategy: 'round-robin', stickyLimit: 2 }])

@@ -1394,6 +1394,12 @@ function canonicalJson(value: unknown): string {
       // own. It is also the shim the LAN relay forwards to, which makes this the
       // one place those models become reachable over OpenAI wire.
       channels: channelLane,
+      comboAffinityPath: join(pluginDataDir(), 'combo-affinity.json'),
+      parentSessionOf: sessionId => {
+        const agents = ctx.get('agents') as { get?: (id: string) => { session?: { header?: { parentSession?: unknown; origin?: unknown } } } | undefined } | undefined
+        const header = agents?.get?.(sessionId)?.session?.header
+        return header?.origin === 'subagent' && typeof header.parentSession === 'string' ? header.parentSession : undefined
+      },
       // The card's Gateway checkboxes. Enforced only on relay-originated
       // requests, so DSH's own picker is never narrowed by a list meant for
       // other machines.
@@ -1548,6 +1554,7 @@ function canonicalJson(value: unknown): string {
     })
     return registerPoolStatusRoute(webCtx, {
     pool: core.pool,
+    routeLastUsed: (sessionId, chainId) => shim.routeLastUsed(sessionId, chainId),
     onPoolChanged: () => invalidateCatalog(),
     catalogs: core.catalogs,
     client: core.client,

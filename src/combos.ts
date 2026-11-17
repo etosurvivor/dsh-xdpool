@@ -568,7 +568,9 @@ export function buildComboCatalog(
  * stale one after a restart would silently continue a rotation the user can no
  * longer see. Losing it costs at most one extra turn on the wrong member.
  */
-const rotation = new Map<string, { index: number; used: number }>()
+const rotation = new Map<string, { index: number; used: number; sequence: number; signature: string; recentSuccesses: readonly string[] }>()
+let rotationSequence = 0
+const BALANCE_WINDOW = 240
 /** Forget the cursors of chains that no longer exist. */
 export function pruneRotation(combos: readonly ComboSetting[]): void {
   const keep = new Set(combos.map(chain => chain.id).filter((id): id is string => typeof id === 'string'))
@@ -582,6 +584,45 @@ export function resetComboRotation(): void {
 export interface ComboChainOptions {
   /** Compute the chain without consuming a rotation step. */
   peek?: boolean
+  /** Capture this request's reservation for later success attribution. */
+  onReservation?: (ticket: ComboRotationTicket) => void
+}
+
+export interface ComboRotationTicket {
+  readonly chainId: string
+  readonly sequence: number
+  readonly signature: string
+  readonly firstMember: string
+}
+
+function rotationSignature(row: ComboModelRow): string {
+  return JSON.stringify([row.models, row.stickyLimit])
+}
+
+/**
+ * When a later fallback actually serves the request, continue rotation after
+ * that member instead of immediately selecting it again. An older concurrent
+ * completion must never undo a newer reservation or a changed member list.
+ */
+export function settleComboSuccess(row: ComboModelRow, ticket: ComboRotationTicket | undefined, memberId: string): void {
+  if (row.strategy !== 'round-robin' || ticket === undefined || ticket.chainId !== row.id) return
+  const current = rotation.get(row.id)
+  if (current === undefined || current.signature !== ticket.signature
+    || rotationSignature(row) !== ticket.signature) return
+  const index = row.models.indexOf(memberId)
+  if (index < 0) return
+  // Count even an older concurrent request's success, while leaving the cursor
+  // chosen by newer requests alone. A bounded window lets recovered members
+  // rejoin without ancient usage permanently distorting fallback selection.
+  const updated = { ...current, recentSuccesses: [...current.recentSuccesses, memberId].slice(-BALANCE_WINDOW) }
+  if (current.sequence !== ticket.sequence || ticket.firstMember === memberId) {
+    rotation.set(row.id, updated)
+    return
+  }
+  const limit = row.stickyLimit > 0 ? row.stickyLimit : 1
+  rotation.set(row.id, limit <= 1
+    ? { ...updated, index: (index + 1) % row.models.length, used: 0 }
+    : { ...updated, index, used: 1 })
 }
 /**
  * The members to try for one turn, in order.
@@ -602,13 +643,27 @@ export function comboChain(
   const members = row.models
   if (members.length <= 1) return members
   if (row.strategy !== 'round-robin') return members
-  const cursor = rotation.get(row.id) ?? { index: 0, used: 0 }
+  const signature = rotationSignature(row)
+  const previous = rotation.get(row.id)
+  const cursor = previous?.signature === signature ? previous : { index: 0, used: 0, recentSuccesses: [] }
   const start = ((cursor.index % members.length) + members.length) % members.length
-  const ordered = [...members.slice(start), ...members.slice(0, start)]
+  const rotated = [...members.slice(start), ...members.slice(0, start)]
+  const counts = new Map<string, number>()
+  for (const member of cursor.recentSuccesses) counts.set(member, (counts.get(member) ?? 0) + 1)
+  // Keep the selected starting member, then prefer less-used fallbacks. This
+  // corrects persistent skew when several concurrent starts fail together.
+  const ordered = [rotated[0]!, ...rotated.slice(1)
+    .map((member, order) => ({ member, order, count: counts.get(member) ?? 0 }))
+    .sort((a, b) => a.count - b.count || a.order - b.order)
+    .map(item => item.member)]
   if (options.peek === true) return ordered
   const used = cursor.used + 1
   const limit = row.stickyLimit > 0 ? row.stickyLimit : 1
-  rotation.set(row.id, used >= limit ? { index: (start + 1) % members.length, used: 0 } : { index: start, used })
+  const sequence = ++rotationSequence
+  rotation.set(row.id, used >= limit
+    ? { index: (start + 1) % members.length, used: 0, sequence, signature, recentSuccesses: cursor.recentSuccesses }
+    : { index: start, used, sequence, signature, recentSuccesses: cursor.recentSuccesses })
+  options.onReservation?.({ chainId: row.id, sequence, signature, firstMember: members[start]! })
   return ordered
 }
 /**

@@ -27,6 +27,7 @@ import {
   POOL_RESCAN_PATH,
   POOL_RESET_COOLDOWN_PATH,
   POOL_STATUS_PATH,
+  POOL_ROUTE_LAST_USED_PATH,
 } from '../src/status-paths.ts'
 import type {
   PoolWebChannelModel,
@@ -100,6 +101,24 @@ async function mount(accounts = 1): Promise<Map<string, unknown>> {
 }
 
 describe('pool card route table', () => {
+  it('serves only the requested session and route and rejects non-local origins', async () => {
+    const pool = new WorkBuddyAccountPool({ authDirs: [await fakeAuthDir(0)], logger: { warn() {} } })
+    const routes = new Map<string, unknown>()
+    const lookup = vi.fn(async (session: string, chain: string) => session === 'one' && chain === 'combo:test' ? { channel: 'TRAE', model: 'Flash' } : undefined)
+    const { ctx } = fakeContext(routes)
+    registerPoolStatusRoute(ctx as never, { pool, catalogs: { cn: new WorkBuddyCatalog(), global: new WorkBuddyCatalog() }, client: new WorkBuddyUpstreamClient(), routeLastUsed: lookup })
+    const handler = routes.get(POOL_ROUTE_LAST_USED_PATH) as (req: unknown, res: unknown) => Promise<void>
+    let status = 0, body = ''
+    const res = { writeHead(code: number) { status = code }, end(data: string) { body = data } }
+    await handler({ method: 'GET', url: '?session=one&chain=combo%3Atest', headers: { origin: 'http://localhost:3000' } }, res)
+    expect(status).toBe(200)
+    expect(JSON.parse(body)).toEqual({ route: { channel: 'TRAE', model: 'Flash' } })
+    await handler({ method: 'GET', url: '?session=two&chain=combo%3Atest', headers: { origin: 'http://localhost:3000' } }, res)
+    expect(JSON.parse(body)).toEqual({ route: null })
+    await handler({ method: 'GET', url: '?session=one&chain=combo%3Atest', headers: { origin: 'https://not-local.example' } }, res)
+    expect(status).toBe(403)
+    expect(lookup).toHaveBeenCalledTimes(2)
+  })
   it('re-announces model availability after the user rescans accounts', async () => {
     const pool = new WorkBuddyAccountPool({ authDirs: [await fakeAuthDir(0)], logger: { warn() {} } })
     const routes = new Map<string, unknown>(), onPoolChanged = vi.fn()

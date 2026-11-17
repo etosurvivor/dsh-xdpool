@@ -53,6 +53,7 @@
  * @module dsh-xdpool/channel-lane
  */
 
+import { randomUUID } from 'node:crypto'
 import { resolveMemberReasoningEffort } from './reasoning.ts'
 
 /** The slice of the host's `llm` service this lane needs. */
@@ -264,6 +265,18 @@ export function createChannelLane(options: {
 interface IncomingMessage {
   role?: unknown
   content?: unknown
+  tool_calls?: unknown
+  tool_call_id?: unknown
+  is_error?: unknown
+}
+
+interface HostMessage {
+  id: string
+  role: string
+  content: Record<string, unknown>[]
+  source: Record<string, string>
+  toolCallId?: string
+  isError?: boolean
 }
 
 /**
@@ -279,15 +292,21 @@ interface IncomingMessage {
 async function toHostMessage(
   message: IncomingMessage,
   attachments: ChannelLaneAttachments | undefined,
-): Promise<{ role: string; content: Record<string, unknown>[] }> {
-  const role = typeof message.role === 'string' ? message.role : 'user'
-  const content = message.content
-  if (typeof content === 'string') {
-    return { role, content: content === '' ? [] : [{ type: 'text', text: content }] }
+  provider: string,
+  model: string,
+): Promise<HostMessage> {
+  if (typeof message !== 'object' || message === null) throw new ChannelRequestError('message must be an object')
+  const role = typeof message.role === 'string' ? message.role : ''
+  if (!['system', 'developer', 'user', 'assistant', 'tool'].includes(role)) {
+    throw new ChannelRequestError(`unsupported message role: ${role || '(missing)'}`)
   }
-  if (!Array.isArray(content)) return { role, content: [] }
+  const content = message.content
   const blocks: Record<string, unknown>[] = []
-  for (const part of content) {
+  if (typeof content === 'string' && content !== '') blocks.push({ type: 'text', text: content })
+  if (content !== undefined && content !== null && typeof content !== 'string' && !Array.isArray(content)) {
+    throw new ChannelRequestError('message content must be a string or an array')
+  }
+  for (const part of Array.isArray(content) ? content : []) {
     if (typeof part !== 'object' || part === null) continue
     const block = part as Record<string, unknown>
     if (block.type === 'text' && typeof block.text === 'string') {
@@ -313,7 +332,33 @@ async function toHostMessage(
     }
     if (block.type === 'image_url') throw new ChannelRequestError('image_url part has no image URL')
   }
-  return { role, content: blocks }
+  if (role === 'assistant') {
+    if (message.tool_calls !== undefined) {
+      if (!Array.isArray(message.tool_calls)) throw new ChannelRequestError('assistant tool_calls must be an array')
+      for (const item of message.tool_calls) {
+        if (typeof item !== 'object' || item === null) throw new ChannelRequestError('assistant tool call must be an object')
+        const call = item as Record<string, unknown>
+        const fn = typeof call.function === 'object' && call.function !== null ? call.function as Record<string, unknown> : undefined
+        if ((call.type !== undefined && call.type !== 'function') || typeof call.id !== 'string' || call.id === ''
+          || typeof fn?.name !== 'string' || fn.name === '' || typeof fn.arguments !== 'string') {
+          throw new ChannelRequestError('assistant tool call requires an id, function name, and arguments')
+        }
+        blocks.push({ type: 'tool-call', id: call.id, name: fn.name, arguments: fn.arguments })
+      }
+    }
+    // OpenAI chat history does not include the original adapter's replay envelope.
+    // Match the host gateway's provider-neutral projection and do not invent replay state.
+    return { id: randomUUID(), role, content: blocks, source: { kind: 'model', provider, model } }
+  }
+  if (role === 'tool') {
+    if (typeof message.tool_call_id !== 'string' || message.tool_call_id === '') throw new ChannelRequestError('tool message requires tool_call_id')
+    return { id: randomUUID(), role, content: blocks, source: { kind: 'tool', callId: message.tool_call_id }, toolCallId: message.tool_call_id,
+      ...(typeof message.is_error === 'boolean' ? { isError: message.is_error } : {}) }
+  }
+  if (role === 'system' || role === 'developer') {
+    return { id: randomUUID(), role: 'system', content: blocks, source: { kind: 'system-prompt' } }
+  }
+  return { id: randomUUID(), role: 'user', content: blocks, source: { kind: 'user' } }
 }
 
 /** The host's finish reason, in the OpenAI spelling. */
@@ -381,9 +426,9 @@ async function* runTurn(input: {
   // Awaited one message at a time rather than mapped: an image part has to be
   // written to the store before the block can name it, and a lost write must
   // surface here instead of reaching the model as a message with no picture.
-  const converted: { role: string; content: Record<string, unknown>[] }[] = []
+  const converted: HostMessage[] = []
   for (const message of incoming) {
-    converted.push(await toHostMessage(message, attachments))
+    converted.push(await toHostMessage(message, attachments, channel, modelId))
   }
   const system = converted.filter(message => message.role === 'system')
   const options: Record<string, unknown> = {

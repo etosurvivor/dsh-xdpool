@@ -12,6 +12,8 @@
  */
 /** Plugin-owned read-only pool status endpoint (account rows + models + shim). */
 export const POOL_STATUS_PATH = '/plugins/dsh-xdpool/status'
+/** Last successful member for one session and route; contains no prompt text. */
+export const POOL_ROUTE_LAST_USED_PATH = '/plugins/dsh-xdpool/route/last-used'
 /** Plugin-owned local account rescan endpoint (re-read desktop snapshots). */
 export const POOL_RESCAN_PATH = '/plugins/dsh-xdpool/accounts/rescan'
 /**

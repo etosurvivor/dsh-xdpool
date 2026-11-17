@@ -78,6 +78,8 @@ Measured across four accounts, one pass collected **3300 credits and 135 energy*
 
 ### 3. Routing-chain reasoning effort
 
+In round-robin mode, requests in the same DSH session stay with the assigned model member until it fails or cools down. New sessions are distributed by model member; subagents use separate sessions and prefer members other than their parent's, while retaining it as a fallback. Subsequent tasks in the same session retain the assignment because DSH supplies a session ID. External gateway clients can provide a stable `x-session-id`; requests without one rotate individually. Priority fallback mode is unchanged.
+
 Chains containing a reasoning model offer **Low / High / Max**. Each selected member receives a supported native effort: Max falls back to High when Max is unavailable; binary models map Low to off and High / Max to on. The mapping is recalculated for each member.
 
 If a CodeArts context-summary call encounters a network or gateway timeout, the plugin can retry once through an existing chain containing that model. This requires a matching chain to be configured; a failed fallback follows normal error handling.

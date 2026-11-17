@@ -1499,67 +1499,62 @@ function withBareModelId(raw: string, modelId: string): string {
         return
       }
       if (!member.aggregate) {
-        // Pool member: one account, one attempt. Account rotation inside a chain
-        // member would double the attempts and could consume the whole budget on
-        // one member, which defeats the chain's reason to exist.
-        const { account, reserveExempt } = await acquireForRequest(member.modelId, conversationKey, memberSignal)
-        if (account === undefined) {
-          const why = pool.unavailableReason(member.modelId, region, reserveExempt)
-          last = {
-            kind: why.reason,
-            // One status per reason, not "cooling ? 429 : 401".
-            //
-            // The old pair collapsed FOUR different answers into 401, whose
-            // universal reading is "your API key is invalid, sign in again" — so
-            // a member parked under the user's own credit floor, one they had
-            // switched off, and an empty pool all told them to re-authenticate.
-            // They would do it, and it would not help, because none of those is
-            // an auth problem (#115).
-            status: REASON_STATUS[why.reason] ?? 503,
-            message: `member ${member.modelId} has no usable WorkBuddy account (${why.reason})`,
-          }
-          noteSwitch(member.modelId, why.reason, last.status)
-          continue
-        }
-        // Region-aware normalisation: a chain member belongs to this shim's
-        // region, so the two region-only rules (leading system on global, the
-        // `off` effort everywhere) can be applied here.
+        // Account-local rate limits must not make the whole WorkBuddy model
+        // member look unavailable. Try distinct eligible accounts first.
         const memberRaw = withMemberReasoningEffort(
           JSON.stringify({ ...(JSON.parse(raw) as Record<string, unknown>), model: member.modelId }),
           member.supportedEfforts,
         )
-        const prepared = client.prepareChatBodyFor(memberRaw, region ?? 'cn')
-        const result = await client.chatStream(account.credential, prepared, memberSignal, conversationKey)
-        if (result.ok) {
-          const memberUsage = usageRecorder === undefined
-            ? undefined
-            : { recorder: usageRecorder, region: region ?? 'cn', model: member.modelId, turnId: usageTurnId }
-          if (wantsNonStreaming(raw)) {
-            await serveSuccessfulJson(
-              res,
-              account,
-              result,
-              logger,
-              refreshBalance,
-              pool,
-              memberUsage,
-              member.modelId,
-              () => settleMember(member.modelId),
-            )
-            return
+        let prepared: string | undefined
+        const triedAccounts = new Set<string>()
+        const accountLimit = (): number => Math.min(maxAttempts, Math.max(1, pool.list(region).length))
+        let poolLast: { kind: string; status: number; message: string } | undefined
+        const tryPoolAccount = async (): Promise<boolean> => {
+          if (memberSignal.aborted || triedAccounts.size >= accountLimit()) return false
+          const { account, reserveExempt } = await acquireForRequest(member.modelId, conversationKey, memberSignal)
+          if (account === undefined) {
+            if (poolLast === undefined) {
+              const why = pool.unavailableReason(member.modelId, region, reserveExempt)
+              poolLast = { kind: why.reason, status: REASON_STATUS[why.reason] ?? 503,
+                message: `member ${member.modelId} has no usable WorkBuddy account (${why.reason})` }
+            }
+            return false
           }
-          await serveSuccessfulStream(res, account, result, logger, refreshBalance, pool, memberUsage,
-            () => settleMember(member.modelId))
-          return
+          if (triedAccounts.has(account.id)) return false
+          triedAccounts.add(account.id)
+          prepared ??= client.prepareChatBodyFor(memberRaw, region ?? 'cn')
+          const result = await client.chatStream(account.credential, prepared, memberSignal, conversationKey)
+          if (result.ok) {
+            const memberUsage = usageRecorder === undefined
+              ? undefined
+              : { recorder: usageRecorder, region: region ?? 'cn', model: member.modelId, turnId: usageTurnId }
+            if (wantsNonStreaming(raw)) {
+              await serveSuccessfulJson(res, account, result, logger, refreshBalance, pool,
+                memberUsage, member.modelId, () => settleMember(member.modelId))
+            } else {
+              await serveSuccessfulStream(res, account, result, logger, refreshBalance, pool,
+                memberUsage, () => settleMember(member.modelId))
+            }
+            return true
+          }
+          usageRecorder?.record({ channel: 'workbuddy', region: region ?? 'cn', model: member.modelId,
+            account: account.label, turnId: usageTurnId, at: Date.now(), ok: false })
+          poolLast = { kind: result.kind, status: result.status, message: result.message }
+          if (result.kind === 'soft_rate') pool.penalize(account.id, parseRateLimitReset(result.message), member.modelId)
+          else if (result.kind === 'session_dead') pool.penalizeCredentialDead(account.id)
+          else if (result.kind === 'risk_blocked') pool.penalize(account.id, Date.now() + 30 * 60_000)
+          else if (result.kind === 'hard_credit') pool.penalizeExhausted(account.id)
+          else return false
+          if (triedAccounts.size < accountLimit()) {
+            traceCombo({ chain: row.id, session: sessionKey, event: 'retry_account', member: member.modelId, kind: result.kind })
+            return tryPoolAccount()
+          }
+          return false
         }
-        last = { kind: result.kind, status: result.status, message: result.message }
-        if (result.kind === 'soft_rate') pool.penalize(account.id, parseRateLimitReset(result.message), member.modelId)
-        else if (result.kind === 'session_dead') pool.penalizeCredentialDead(account.id)
-        // A flagged account is not a dead one: refreshing its token changes nothing, so the
-        // pool cools it and moves on rather than retrying the same credential (issue #127).
-        else if (result.kind === 'risk_blocked') pool.penalize(account.id, Date.now() + 30 * 60_000)
-        else if (result.kind === 'hard_credit') pool.penalizeExhausted(account.id)
-        noteSwitch(member.modelId, result.kind, result.status)
+        if (await tryPoolAccount()) return
+        if (signal.aborted) return
+        last = poolLast ?? { kind: 'combo_empty', status: 503, message: `member ${member.modelId} has no usable WorkBuddy account` }
+        noteSwitch(member.modelId, last.kind, last.status)
         continue
       }
       if (store === undefined || aggregate === undefined) {

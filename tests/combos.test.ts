@@ -163,6 +163,64 @@ function post(shim: { baseUrl: () => string; token: () => string }, model: strin
   })
 }
 describe('a chain serves its first member that answers', () => {
+  it('tries another pool account before switching the session to another model member', async () => {
+    const seen: { model?: string; body: string }[] = []
+    const upstream = await startFakeProvider(seen)
+    const accounts = ['a1', 'a2'].map(id => ({ id, label: id, credential: { accessToken: id } }))
+    const cooling = new Set<string>()
+    const attempts: string[] = []
+    const pool = {
+      ...poolWith(async () => accounts.find(account => !cooling.has(account.id))),
+      list: () => accounts,
+      penalize: (id: string) => { cooling.add(id) },
+      expiryReadingOf: () => ({ stale: false }),
+    } as unknown as WorkBuddyAccountPool
+    const client = {
+      prepareChatBodyFor: (raw: string) => raw,
+      chatStream: async (credential: { accessToken: string }) => {
+        attempts.push(credential.accessToken)
+        return credential.accessToken === 'a1'
+          ? { ok: false as const, kind: 'soft_rate' as const, status: 429, message: 'rate limited' }
+          : { ok: true as const, response: new Response('data: {"choices":[{"delta":{"content":"pool ok"}}]}\n\ndata: [DONE]\n\n') }
+      },
+      fetchCredits: async () => { throw new Error('not needed') },
+    } as unknown as WorkBuddyUpstreamClient
+    try {
+      const response = await withShim({ store: storeFor(portOf(upstream), [{ name: 'chain', models: ['hy3', COMPOSITE_ID] }]), pool, client },
+        async shim => { const r = await post(shim, 'combo:chain'); return { status: r.status, body: await r.text() } })
+      expect(response.status).toBe(200)
+      expect(response.body).toContain('pool ok')
+      expect(attempts).toEqual(['a1', 'a2'])
+      expect(seen).toHaveLength(0)
+    } finally { await new Promise<void>(resolve => upstream.close(() => resolve())) }
+  })
+
+  it('falls back to the next member after all pool accounts are cooling', async () => {
+    const seen: { model?: string; body: string }[] = []
+    const upstream = await startFakeProvider(seen)
+    const accounts = ['a1', 'a2'].map(id => ({ id, label: id, credential: { accessToken: id } }))
+    const cooling = new Set<string>()
+    const attempts: string[] = []
+    const pool = {
+      ...poolWith(async () => accounts.find(account => !cooling.has(account.id))),
+      list: () => accounts,
+      penalize: (id: string) => { cooling.add(id) },
+    } as unknown as WorkBuddyAccountPool
+    const client = {
+      prepareChatBodyFor: (raw: string) => raw,
+      chatStream: async (credential: { accessToken: string }) => {
+        attempts.push(credential.accessToken)
+        return { ok: false as const, kind: 'soft_rate' as const, status: 429, message: 'rate limited' }
+      },
+    } as unknown as WorkBuddyUpstreamClient
+    try {
+      const response = await withShim({ store: storeFor(portOf(upstream), [{ name: 'chain', models: ['hy3', COMPOSITE_ID] }]), pool, client },
+        async shim => { const r = await post(shim, 'combo:chain'); return { status: r.status, body: await r.text() } })
+      expect(response.status).toBe(200)
+      expect(attempts).toEqual(['a1', 'a2'])
+      expect(seen).toHaveLength(1)
+    } finally { await new Promise<void>(resolve => upstream.close(() => resolve())) }
+  })
   it('routes a chain id to the pool when the pool member is first', async () => {
     const seen: { model?: string; body: string }[] = []
     const upstream = await startFakeProvider(seen)

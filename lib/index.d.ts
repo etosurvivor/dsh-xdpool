@@ -3313,7 +3313,7 @@ type ChannelLaneEvent = {
   delta: Record<string, unknown>;
 } | {
   kind: 'usage';
-  usage: Record<string, number>;
+  usage: Record<string, unknown>;
 } | {
   kind: 'done';
   finishReason: string;

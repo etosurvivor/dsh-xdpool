@@ -144,7 +144,7 @@ export interface ChannelLaneRow {
 /** One translated event, so the caller decides how to frame it as SSE. */
 export type ChannelLaneEvent =
   | { kind: 'delta'; delta: Record<string, unknown> }
-  | { kind: 'usage'; usage: Record<string, number> }
+  | { kind: 'usage'; usage: Record<string, unknown> }
   | { kind: 'done'; finishReason: string }
 
 /** How long a listing is reused before it is asked again. */
@@ -397,14 +397,25 @@ export function toChannelEvent(chunk: Record<string, unknown>, toolIndex = 0): C
     case 'usage': {
       const usage = chunk.usage as Record<string, unknown> | undefined
       if (usage === undefined) return undefined
-      const prompt = Number(usage.input ?? usage.inputTokens ?? 0)
+      if (usage.input === undefined && usage.inputTokens === undefined
+        && usage.output === undefined && usage.outputTokens === undefined) return undefined
+      // DSH reports uncached input separately from cache reads and writes;
+      // OpenAI's prompt_tokens is the combined input count.
+      const cacheRead = Number(usage.cacheReadTokens ?? 0)
+      const cacheWrite = Number(usage.cacheWriteTokens ?? 0)
+      const prompt = Number(usage.input ?? usage.inputTokens ?? 0) + cacheRead + cacheWrite
       const completion = Number(usage.output ?? usage.outputTokens ?? 0)
       // The host reports input/output only; a `total` of its own is honoured if a
       // future generation adds one, but the sum is computed rather than defaulted
       // to 0 — a client that meters spend off `total_tokens` would otherwise read
       // every channel turn as free.
       const total = Number(usage.total ?? usage.totalTokens ?? prompt + completion)
-      return { kind: 'usage', usage: { prompt_tokens: prompt, completion_tokens: completion, total_tokens: total } }
+      const reasoning = Number(usage.reasoningTokens ?? 0)
+      return { kind: 'usage', usage: {
+        prompt_tokens: prompt, completion_tokens: completion, total_tokens: total,
+        ...(cacheRead > 0 ? { prompt_tokens_details: { cached_tokens: cacheRead } } : {}),
+        ...(reasoning > 0 ? { completion_tokens_details: { reasoning_tokens: reasoning } } : {}),
+      } }
     }
     case 'finish':
       return { kind: 'done', finishReason: mapFinishReason(chunk.reason) }

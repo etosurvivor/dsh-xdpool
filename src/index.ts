@@ -240,7 +240,7 @@ export function combosStatusOf(
 import { WorkBuddyScheduler, type AutomationJobKind, type AutomationLedger, type AutomationOptions } from './scheduler.ts'
 import { channelListableAsRows, createWorkBuddyShim, type WorkBuddyShim } from './shim.ts'
 import { createChannelLane, type ChannelLaneLlm } from './channel-lane.ts'
-import { backfillUsageFromLedger, readCreditSpend } from './credit-report.ts'
+import { backfillUsageFromLedger, readCreditSpend, reconcileChannelLedger } from './credit-report.ts'
 import { ratesFor, type CreditRates } from './credits.ts'
 import { createPoolRelay, newRelayKey, relayDocumentOf, RELAY_DEFAULT_PORT, RELAY_HOSTS, type RelaySettings } from './relay.ts'
 import { UsageRecorder } from './stats.ts'
@@ -1570,7 +1570,9 @@ function canonicalJson(value: unknown): string {
     client: core.client,
     // The usage panel reads the SAME recorder both shims write to, so its totals
     // cover every gateway rather than one half of them.
-    usage: () => usageRecorder.summary(),
+    usage: () => reconcileChannelLedger(dshHome(), usageRecorder.summary(), new Set(
+      REGISTERED_CHANNELS.map(channel => channel.id).filter(id => id !== 'buddy' && id !== 'workbuddy'),
+    )),
     shim: () => shimInfo('cn'),
     // The automation is pool-wide, not per region, so both routes read the same
     // scheduler snapshot.

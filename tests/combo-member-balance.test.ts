@@ -8,33 +8,40 @@ import { createChannelLane, type ChannelLaneLlm } from '../src/channel-lane.ts'
 import { resetComboRotation } from '../src/combos.ts'
 import { createWorkBuddyShim } from '../src/shim.ts'
 import { createWorkBuddyAdapter } from '../src/adapter.ts'
+import { UsageRecorder } from '../src/stats.ts'
 import type { WorkBuddyAccountPool } from '../src/accounts.ts'
 import type { WorkBuddyUpstreamClient } from '../src/upstream.ts'
 
 const running: { close(): Promise<void> }[] = []
 afterEach(async () => { while (running.length > 0) await running.pop()!.close(); resetComboRotation() })
 
-async function gateway(models: Record<string, string[]>, members: string[], failed: Set<string>, served: string[], opts: { path?: string; strategy?: 'round-robin' | 'fallback'; parents?: Record<string, string> } = {}) {
+async function gateway(models: Record<string, string[]>, members: string[], failed: Set<string>, served: string[], opts: { path?: string; strategy?: 'round-robin' | 'fallback'; parents?: Record<string, string>; usage?: UsageRecorder; transient?: Map<string, number> } = {}) {
   const llm: ChannelLaneLlm = {
     listModels: async provider => (models[provider] ?? []).map(id => ({ id })),
     stream: options => (async function* () {
       const id = `${String(options.provider)}:${String(options.model)}`
+      const transient = opts.transient?.get(id) ?? 0
+      if (transient > 0) {
+        opts.transient?.set(id, transient - 1)
+        throw new Error('fetch failed: ECONNRESET')
+      }
       if (failed.has(id)) {
         yield { type: 'finish', reason: { kind: 'error', failure: { message: 'temporarily unavailable' } } }
         return
       }
       served.push(id)
       yield { type: 'text-delta', index: 0, text: id }
+      yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 4, cacheReadTokens: 3, reasoningTokens: 2 } }
       yield { type: 'finish', reason: { kind: 'stop' } }
     })(),
   }
   const channels = createChannelLane({ llm, providers: () => Object.keys(models), toId: (c, m) => `${c}:${m}` })
-  const host = await channels.rows()
+  let host = await channels.rows()
   const store = { version: 1 as const, combos: [{ name: 'balanced', models: members, strategy: opts.strategy ?? 'round-robin' as const, stickyLimit: 1 }] }
   const catalog = new AggregateCatalog(() => store, () => [], () => host)
   await catalog.refresh()
   const pool = { list: () => [], acquire: async () => undefined } as unknown as WorkBuddyAccountPool
-  const shim = createWorkBuddyShim({ pool, client: {} as WorkBuddyUpstreamClient, catalog: new WorkBuddyCatalog('cn'), aggregate: { catalog, readStore: () => store }, channels, ...(opts.path === undefined ? {} : { comboAffinityPath: opts.path }), ...(opts.parents === undefined ? {} : { parentSessionOf: (session: string) => opts.parents?.[session] }) })
+  const shim = createWorkBuddyShim({ pool, client: {} as WorkBuddyUpstreamClient, catalog: new WorkBuddyCatalog('cn'), aggregate: { catalog, readStore: () => store }, channels, ...(opts.path === undefined ? {} : { comboAffinityPath: opts.path }), ...(opts.parents === undefined ? {} : { parentSessionOf: (session: string) => opts.parents?.[session] }), ...(opts.usage === undefined ? {} : { usageRecorder: opts.usage }) })
   running.push(shim)
   await shim.ready
   const call = async (stream: boolean, session?: string) => {
@@ -42,12 +49,88 @@ async function gateway(models: Record<string, string[]>, members: string[], fail
       method: 'POST', headers: { Authorization: `Bearer ${shim.token()}`, 'Content-Type': 'application/json', ...(session === undefined ? {} : { 'x-session-id': session }) },
       body: JSON.stringify({ model: 'combo:balanced', stream, messages: [{ role: 'user', content: 'test' }] }),
     })
-    expect(response.status, await response.text()).toBe(200)
+    const body = await response.text()
+    expect(response.status, body).toBe(200)
+    return body
   }
-  return Object.assign(call, { shim, catalog })
+  const refresh = async () => { channels.invalidateAll(); host = await channels.rows(); await catalog.refresh() }
+  return Object.assign(call, { shim, catalog, refresh })
 }
 
 describe('balanced route members', () => {
+  it.each([true, false])('counts and forwards actual usage for main and child sessions (stream=%s)', async stream => {
+    const usage = new UsageRecorder()
+    const served: string[] = []
+    const call = await gateway({ one: ['a', 'b'] }, ['one:a', 'one:b'], new Set(), served, { usage, parents: { child: 'parent' } })
+    const parent = await call(stream, 'parent')
+    const child = await call(stream, 'child')
+    expect(parent).toContain('prompt_tokens')
+    expect(child).toContain('completion_tokens')
+    const summary = usage.summary()
+    expect(summary.calls).toBe(2)
+    expect(summary.rows.map(row => [row.model, row.inputTokens, row.outputTokens, row.cachedTokens, row.reasoningTokens]).sort())
+      .toEqual([['a', 13, 4, 3, 2], ['b', 13, 4, 3, 2]])
+  })
+  it('keeps a configured session member when its catalog temporarily disappears', async () => {
+    const served: string[] = []
+    const models = { one: ['a'], two: ['b'] }
+    const call = await gateway(models, ['one:a', 'two:b'], new Set(), served)
+    await call(false, 'parent')
+    models.one = []
+    await call.refresh()
+    await call(false, 'parent')
+    models.one = ['a']
+    await call.refresh()
+    await call(false, 'parent')
+    expect(served).toEqual(['one:a', 'one:a', 'one:a'])
+  })
+  it('retries a transient failure on the pinned member and records a private diagnostic', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'xdpool-route-retry-'))
+    try {
+      const path = join(dir, 'affinity.json')
+      const usage = new UsageRecorder()
+      const served: string[] = []
+      const transient = new Map<string, number>()
+      const call = await gateway({ one: ['a', 'b'] }, ['one:a', 'one:b'], new Set(), served, { path, usage, transient })
+      await call(false, 'private-session')
+      transient.set('one:a', 1)
+      await call(false, 'private-session')
+      expect(served).toEqual(['one:a', 'one:a'])
+      expect(usage.summary().calls).toBe(3)
+      const trace = await readFile(`${path}.events.jsonl`, 'utf8')
+      expect(trace).toContain('"event":"retry"')
+      expect(trace).not.toContain('private-session')
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
+  it('keeps the persisted binding through a missing catalog at startup', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'xdpool-route-missing-'))
+    try {
+      const path = join(dir, 'affinity.json')
+      const served: string[] = []
+      const models = { one: ['a'], two: ['b'] }
+      const first = await gateway(models, ['one:a', 'two:b'], new Set(), served, { path })
+      await first(false, 'parent')
+      await first.shim.close()
+      resetComboRotation()
+      models.one = []
+      const second = await gateway(models, ['one:a', 'two:b'], new Set(), served, { path })
+      await second(false, 'parent')
+      models.one = ['a']
+      await second.refresh()
+      await second(false, 'parent')
+      expect(served).toEqual(['one:a', 'two:b', 'one:a'])
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
+  it('clears a binding when the user actually removes its member', async () => {
+    const served: string[] = []
+    const members = ['one:a', 'two:b']
+    const call = await gateway({ one: ['a'], two: ['b'] }, members, new Set(), served)
+    await call(false, 'parent')
+    members.shift()
+    await call.refresh()
+    await call(false, 'parent')
+    expect(served).toEqual(['one:a', 'two:b'])
+  })
   it('routes a global WorkBuddy member to its own host provider and reports its region', async () => {
     const served: string[] = []
     const call = await gateway({ 'xdpool-global': ['deepseek-v4.1-flash'] }, ['xdpool-global:deepseek-v4.1-flash'], new Set(), served)
@@ -121,6 +204,7 @@ describe('balanced route members', () => {
       const chunks = []
       for await (const chunk of adapter.stream({ provider: 'xdpool-aggregate', model: 'combo:balanced', sessionId: session as never, messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }] as never })) chunks.push(chunk)
       expect(chunks.some(chunk => chunk.type === 'finish' && chunk.reason.kind === 'stop')).toBe(true)
+      expect(chunks.some(chunk => chunk.type === 'usage' && chunk.usage.outputTokens === 4)).toBe(true)
     }
     await ask('session-a')
     await ask('session-a')

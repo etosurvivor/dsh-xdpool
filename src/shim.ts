@@ -15,7 +15,7 @@
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { Readable, Transform } from 'node:stream'
 import type { WorkBuddyAccount, WorkBuddyAccountPool } from './accounts.ts'
@@ -37,9 +37,9 @@ import {
   type ComboMember,
   type ComboModelRow,
 } from './combos.ts'
-import type { AggregateStore } from './store.ts'
+import { combosOf, type AggregateStore } from './store.ts'
 import { paidAlternativeFor } from './siblings.ts'
-import { inspectSseFrame, StreamTracker, type UsageRecorder } from './stats.ts'
+import { inspectSseFrame, parseUsage, StreamTracker, type UsageRecorder } from './stats.ts'
 import {
   bufferedFramesToCompletion,
   createTurnAccumulator,
@@ -463,6 +463,7 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
   // requests in one session start with the same member. A failed first request
   // does not become a permanent assignment. No conversation text is stored.
   const comboAffinities = new Map<string, { member: string; confirmed: boolean; reservation?: ComboRotationTicket }>()
+  const knownComboMembers = new Map<string, ComboMember>()
   const lastRoutes = new Map<string, string>()
   const COMBO_AFFINITY_LIMIT = 5000
   if (options.comboAffinityPath !== undefined) {
@@ -487,6 +488,22 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       writeFileSync(tmp, JSON.stringify({ version: 1, bindings }), { encoding: 'utf8', mode: 0o600 })
       renameSync(tmp, path)
     } catch (error) { logger?.warn?.('heybash-xdpool: could not save route affinity', error) }
+  }
+  // Keep a small, content-free trace: successful fallbacks are otherwise hidden
+  // from the host session log, making it impossible to explain a model switch.
+  const traceCombo = (event: Record<string, unknown>): void => {
+    if (options.comboAffinityPath === undefined) return
+    const path = `${options.comboAffinityPath}.events.jsonl`
+    try {
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+      try {
+        if (statSync(path).size > 1_000_000) {
+          const tail = readFileSync(path, 'utf8').slice(-500_000)
+          writeFileSync(path, tail.slice(tail.indexOf('\n') + 1), { mode: 0o600 })
+        }
+      } catch { /* The first event creates the file. */ }
+      appendFileSync(path, `${JSON.stringify({ at: Date.now(), ...event })}\n`, { mode: 0o600 })
+    } catch (error) { logger?.warn?.('heybash-xdpool: could not save routing event', error) }
   }
   const extra = options.extra
   const channels = options.channels
@@ -710,7 +727,7 @@ function withBareModelId(raw: string, modelId: string): string {
     let text = ''
     let reasoning = ''
     let toolCalls: Record<string, unknown>[] = []
-    let usage: Record<string, number> | undefined
+    let usage: Record<string, unknown> | undefined
     let finish = 'stop'
     let started = false
     /** Open the SSE body on the first delta, so an early failure is a status. */
@@ -1146,7 +1163,20 @@ function withBareModelId(raw: string, modelId: string): string {
     }
     const affinityKey = sessionKey === undefined || row.strategy !== 'round-robin' ? undefined : `${row.id}:${sessionKey}`
     let binding = affinityKey === undefined ? undefined : comboAffinities.get(affinityKey)
-    if (binding !== undefined && !row.models.includes(binding.member)) {
+    const configured = store === undefined ? undefined : combosOf(store).find(chain => chain.id === row.id)
+    const isConfigured = (member: string): boolean => configured === undefined || configured.models.some(id => {
+      if (id === member || resolveComboMember(id, sources)?.modelId === member) return true
+      const separator = member.indexOf(':')
+      if (separator < 1) return false
+      const owner = member.slice(0, separator)
+      let rest = id
+      while (rest.startsWith(`${owner}:`) || rest.startsWith(`${owner}/`)) rest = rest.slice(owner.length + 1)
+      return rest === member.slice(separator + 1)
+    })
+    // A live catalog is not configuration: a transient listing failure can
+    // omit a healthy member. Only an explicit removal invalidates the binding.
+    if (binding !== undefined && !isConfigured(binding.member)) {
+      traceCombo({ chain: row.id, session: sessionKey, event: 'member_removed', member: binding.member })
       comboAffinities.delete(affinityKey!)
       saveComboAffinities()
       binding = undefined
@@ -1164,9 +1194,24 @@ function withBareModelId(raw: string, modelId: string): string {
       }
     }
     const preferred = binding?.member
+    const resolved = ordered.map(id => resolveComboMember(id, sources)).filter((member): member is ComboMember => member !== undefined)
+    for (const member of resolved) {
+      knownComboMembers.set(member.modelId, member)
+      if (knownComboMembers.size > COMBO_AFFINITY_LIMIT) {
+        const oldest = knownComboMembers.keys().next().value
+        if (oldest !== undefined) knownComboMembers.delete(oldest)
+      }
+    }
     let members = (preferred === undefined ? ordered : [preferred, ...ordered.filter(id => id !== preferred)])
       .map(modelId => resolveComboMember(modelId, sources))
       .filter((member): member is ComboMember => member !== undefined)
+    if (preferred !== undefined && !members.some(member => member.modelId === preferred)) {
+      const remembered = knownComboMembers.get(preferred)
+      // Never route a request sized for a larger context to stale smaller metadata.
+      if (remembered !== undefined && remembered.contextWindow >= row.contextWindow) members.unshift(remembered)
+    }
+    let temporarilyMissingPreferred = preferred !== undefined && !members.some(member => member.modelId === preferred)
+    if (temporarilyMissingPreferred) traceCombo({ chain: row.id, session: sessionKey, event: 'directory_missing', member: preferred })
     const body = JSON.parse(raw) as { messages?: { content?: unknown }[] }
     const hasImage = Array.isArray(body.messages) && body.messages.some(message =>
       Array.isArray(message.content) && message.content.some((part: unknown) =>
@@ -1212,10 +1257,16 @@ function withBareModelId(raw: string, modelId: string): string {
         return
       }
       if (comboAffinities.get(affinityKey) !== binding) return
+      // A catalog outage is not proof that the configured member failed. Use
+      // another member for this request, then try the original when it returns.
+      if (temporarilyMissingPreferred && binding.confirmed) return
       // A concurrent call already switched this session. An older response
       // must not silently move it back to the previous member.
       if (binding.confirmed && binding.member !== observedMember) return
       const isNewAssignment = !binding.confirmed || binding.member !== memberId
+      if (binding.confirmed && binding.member !== memberId) {
+        traceCombo({ chain: row.id, session: sessionKey, event: 'rebind', from: binding.member, to: memberId })
+      }
       if (binding.confirmed && binding.member !== memberId && reservation === undefined) {
         comboChain(row, { onReservation: ticket => { reservation = ticket } })
       }
@@ -1245,8 +1296,11 @@ function withBareModelId(raw: string, modelId: string): string {
      * shape invented for diagnostics would break every client that parses it.
      */
     const switches: string[] = []
-    const noteSwitch = (member: string, kind: string, status: number): void => {
+    let memberStartedAt = Date.now()
+    const noteSwitch = (member: string, kind: string, status: number, reason?: string): void => {
       switches.push(`${member} → ${kind} (${String(status)})`)
+      traceCombo({ chain: row.id, session: sessionKey, event: 'skip', member, kind, status,
+        elapsedMs: Date.now() - memberStartedAt, ...(reason === undefined ? {} : { reason }) })
       logger?.warn?.(`heybash-xdpool: chain ${row.id} skipped ${member}: ${kind} (${String(status)}); trying next`)
     }
     // The chain path had no conversation identity at all, which meant a combo
@@ -1254,8 +1308,10 @@ function withBareModelId(raw: string, modelId: string): string {
     // 11128 in exactly the same way the single-model path was. Derived from the
     // same body, so every member of the chain files under one conversation.
     const conversationKey = sessionKey ?? conversationKeyOf(raw)
+    const usageTurnId = randomBytes(8).toString('hex')
     for (const member of members) {
       if (signal.aborted) return
+      memberStartedAt = Date.now()
       attempts.push(member.modelId)
       // A per-member deadline, so one hung upstream cannot hold the whole chain.
       //
@@ -1308,6 +1364,10 @@ function withBareModelId(raw: string, modelId: string): string {
         }
         const channelTarget = channels.resolve(member.modelId)
         if (channelTarget === undefined) {
+          if (member.modelId === preferred && binding?.confirmed) {
+            temporarilyMissingPreferred = true
+            traceCombo({ chain: row.id, session: sessionKey, event: 'directory_missing', member: preferred })
+          }
           last = { kind: 'combo_config', status: 400, message: `member ${member.modelId} is not a resolvable channel model id` }
           noteSwitch(member.modelId, 'combo_config', 400)
           continue
@@ -1318,6 +1378,14 @@ function withBareModelId(raw: string, modelId: string): string {
         const memberCreated = Math.floor(Date.now() / 1000)
         const memberCompletionId = `chatcmpl-xdpool-${randomBytes(6).toString('base64url')}`
         const hostFrames: string[] = []
+        let hostUsage: Record<string, unknown> | undefined
+        const recordHostCall = (ok: boolean): void => {
+          // The international pool's nested shim already records this call.
+          if (channelTarget.channel === 'xdpool-global' || channelTarget.channel === 'xdpool') return
+          const usage = parseUsage(hostUsage)
+          usageRecorder?.record({ channel: channelTarget.channel, region: '', model: channelTarget.modelId,
+            turnId: usageTurnId, at: Date.now(), ok, ...(usage === undefined ? {} : { usage }) })
+        }
         const frameOf = (delta: Record<string, unknown>, reason: string | null): string => JSON.stringify({
           id: memberCompletionId,
           object: 'chat.completion.chunk',
@@ -1329,6 +1397,7 @@ function withBareModelId(raw: string, modelId: string): string {
           choices: [{ index: 0, delta, finish_reason: reason }],
           usage: null,
         })
+        const runHostAttempt = async (retryAllowed: boolean): Promise<void> => {
         try {
           let finishReason = 'stop'
           let sawVisible = false
@@ -1345,8 +1414,7 @@ function withBareModelId(raw: string, modelId: string): string {
             // "a member was skipped and must be recorded", and a loop-local skip
             // would make that count wrong. if/else keeps the two meanings apart.
             if (event.kind === 'usage') {
-              // Usage is reported by the lane but the chain's wire contract carries
-              // no per-member usage block, so it is dropped rather than invented.
+              hostUsage = event.usage
             } else if (event.kind === 'done') {
               if (typeof event.finishReason === 'string' && event.finishReason !== '') finishReason = event.finishReason
             } else {
@@ -1370,19 +1438,50 @@ function withBareModelId(raw: string, modelId: string): string {
            * whether or not anything preceded it.
            */
           hostFrames.push(frameOf({}, finishReason))
+          if (hostUsage !== undefined) hostFrames.push(JSON.stringify({
+            id: memberCompletionId, object: 'chat.completion.chunk', created: memberCreated,
+            model: channelTarget.modelId, choices: [], usage: hostUsage,
+          }))
+        } catch (error: unknown) {
+          recordHostCall(false)
+          const message = error instanceof Error ? error.message : String(error)
+          // Retry a transient transport/server failure once on the pinned member,
+          // within the original deadline. Authentication, rate limits and bad
+          // requests still fall back immediately.
+          const retryable = /fetch failed|ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|timed?\s*out|\b50[234]\b/iu.test(message)
+            && !/\b(?:401|403|429)\b|rate.?limit|unauthori[sz]ed/iu.test(message)
+          if (retryAllowed && retryable && binding?.confirmed && member.modelId === preferred
+            && !signal.aborted && !memberSignal.aborted && !(error instanceof ChannelRequestError)) {
+            traceCombo({ chain: row.id, session: sessionKey, event: 'retry', member: member.modelId, reason: 'transient' })
+            hostFrames.length = 0
+            hostUsage = undefined
+            await runHostAttempt(false)
+            return
+          }
+          throw error
+        }
+        }
+        try {
+          await runHostAttempt(true)
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : String(error)
           const kind = error instanceof ChannelRequestError ? 'client' : 'server'
+          const reason = /\b429\b|rate.?limit/iu.test(message) ? 'rate_limit'
+            : /\b(?:401|403)\b|unauthori[sz]ed/iu.test(message) ? 'authentication'
+              : memberSignal.aborted && !signal.aborted ? 'timeout'
+                : /timed?\s*out|ETIMEDOUT/iu.test(message) ? 'timeout'
+                  : /fetch failed|ECONNRESET|ECONNREFUSED|EPIPE/iu.test(message) ? 'network' : 'upstream_error'
           last = {
             kind,
             status: kind === 'client' ? 400 : 502,
             message: `channel ${channelTarget.channel}: ${message}`,
           }
-          noteSwitch(member.modelId, kind, last.status)
+          noteSwitch(member.modelId, kind, last.status, reason)
           continue
         }
         // Buffered payloads become the response, exactly as the aggregate branch
         // does below.
+        recordHostCall(true)
         settleMember(member.modelId)
         if (wantsNonStreaming(raw)) {
           writeJson(res, 200, bufferedFramesToCompletion(hostFrames, member.modelId))
@@ -1432,10 +1531,9 @@ function withBareModelId(raw: string, modelId: string): string {
         const prepared = client.prepareChatBodyFor(memberRaw, region ?? 'cn')
         const result = await client.chatStream(account.credential, prepared, memberSignal, conversationKey)
         if (result.ok) {
-          const turnId = randomBytes(8).toString('hex')
           const memberUsage = usageRecorder === undefined
             ? undefined
-            : { recorder: usageRecorder, region: region ?? 'cn', model: member.modelId, turnId }
+            : { recorder: usageRecorder, region: region ?? 'cn', model: member.modelId, turnId: usageTurnId }
           if (wantsNonStreaming(raw)) {
             await serveSuccessfulJson(
               res,
@@ -1501,7 +1599,7 @@ function withBareModelId(raw: string, modelId: string): string {
           // `国内版`.
           ...usageRecorder === undefined
             ? {}
-            : { usage: { recorder: usageRecorder, turnId: conversationKey ?? randomBytes(8).toString('hex') } },
+            : { usage: { recorder: usageRecorder, turnId: usageTurnId } },
         })
       } catch (error: unknown) {
         const kind = error instanceof AggregateError ? error.kind : 'server'

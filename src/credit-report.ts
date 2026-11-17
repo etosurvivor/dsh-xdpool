@@ -22,20 +22,107 @@
  * @module dsh-xdpool/credit-report
  */
 import { readFile } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { UsageCall } from './stats.ts'
+import { UsageRecorder, usageDayKey, type UsageCall, type UsageRow, type UsageSummary } from './stats.ts'
 import { creditsOf, ratesFor, rateFromModelName, totalsByChannel, type CreditChannelTotal, type CreditRates, type CreditSpendRow } from './credits.ts'
 
 /** One ledger entry: the token counts the pack recorded for a model on a day. */
 interface LedgerStats {
   requests?: unknown
+  reportedRequests?: unknown
   inputTokens?: unknown
   outputTokens?: unknown
   /** Cache READS. Billed at the cache coefficient, and the largest term in agent use. */
   cacheReadTokens?: unknown
+  cacheWriteTokens?: unknown
   /** Failed requests, so a row's `ok` can reflect them. */
   errors?: unknown
   reasoningTokens?: unknown
+}
+
+/**
+ * Reconcile today's pack-owned channels with its persisted daily ledger.
+ * Direct DSH calls (including subagents) bypass the shim recorder. The pack
+ * already records both those calls and routed calls, so use its totals as an
+ * authoritative overlapping snapshot, never add them to the same live calls.
+ */
+export function reconcileChannelLedger(home: string, summary: UsageSummary, channels: ReadonlySet<string>, now = Date.now()): UsageSummary {
+  let day: Record<string, unknown>
+  const ledgerDay = (at: number): string => new Date(at + 8 * 60 * 60_000).toISOString().slice(0, 10)
+  const today = ledgerDay(now)
+  try {
+    const parsed = JSON.parse(readFileSync(join(home, LEDGER_FILE), 'utf8')) as { days?: Record<string, unknown> }
+    // The pack uses a fixed UTC+8 accounting day, independently of host TZ.
+    const value = parsed.days?.[today]
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return summary
+    day = value as Record<string, unknown>
+  } catch { return summary }
+  // The live recorder can span midnight; the pack snapshot is today only.
+  // Compare like periods rather than max-ing yesterday's usage into today.
+  if (summary.entries.some(entry => channels.has(entry.channel) && ledgerDay(entry.at) !== today)) {
+    const current = new UsageRecorder(Math.max(1, summary.entries.length))
+    for (const entry of [...summary.entries].reverse()) {
+      if (!channels.has(entry.channel) || ledgerDay(entry.at) === today) current.record(entry)
+    }
+    summary = current.summary()
+  }
+  const totals = new Map<string, { channel: string; model: string; calls: number; failed: number; input: number; output: number; cached: number; reasoning: number; reported: boolean }>()
+  for (const [key, raw] of Object.entries(day)) {
+    const named = parseLedgerKey(key)
+    if (named === undefined || named.mode !== POOL_MODE || !channels.has(named.channel)
+      || typeof raw !== 'object' || raw === null || Array.isArray(raw)) continue
+    const entry = raw as LedgerStats
+    const id = `${named.channel}\0${named.model}`
+    const row = totals.get(id) ?? { channel: named.channel, model: named.model, calls: 0, failed: 0, input: 0, output: 0, cached: 0, reasoning: 0, reported: false }
+    row.calls += numberOf(entry.requests)
+    row.failed += numberOf(entry.errors)
+    row.input += numberOf(entry.inputTokens) + numberOf(entry.cacheReadTokens) + numberOf(entry.cacheWriteTokens)
+    row.output += numberOf(entry.outputTokens)
+    row.cached += numberOf(entry.cacheReadTokens)
+    row.reasoning += numberOf(entry.reasoningTokens)
+    row.reported ||= numberOf(entry.reportedRequests) > 0 || numberOf(entry.inputTokens) > 0 || numberOf(entry.outputTokens) > 0
+    totals.set(id, row)
+  }
+  const rows = summary.rows.map(row => ({ ...row }))
+  let extraCalls = 0
+  let extraInput = 0
+  let extraOutput = 0
+  for (const total of totals.values()) {
+    let row = rows.find(item => item.channel === total.channel && item.region === '' && item.model === total.model)
+    if (row === undefined) {
+      row = { channel: total.channel, region: '', model: total.model, calls: 0, turns: 0, failed: 0, recovered: 0,
+        inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0, tps: null, avgTtftMs: null, lastUsedAt: 0 } satisfies UsageRow
+      rows.push(row)
+    }
+    // The file is flushed asynchronously; max also retains a just-completed
+    // live request during that brief window without double-counting it later.
+    extraCalls += Math.max(0, total.calls - row.calls)
+    extraInput += Math.max(0, total.input - row.inputTokens)
+    extraOutput += Math.max(0, total.output - row.outputTokens)
+    row.calls = Math.max(row.calls, total.calls)
+    row.failed = Math.max(row.failed, total.failed)
+    row.inputTokens = Math.max(row.inputTokens, total.input)
+    row.outputTokens = Math.max(row.outputTokens, total.output)
+    row.cachedTokens = Math.max(row.cachedTokens, total.cached)
+    row.reasoningTokens = Math.max(row.reasoningTokens, total.reasoning)
+  }
+  rows.sort((a, b) => (b.calls - a.calls) || (b.lastUsedAt - a.lastUsedAt) || a.model.localeCompare(b.model))
+  const days = summary.days.map(row => ({ ...row }))
+  if (extraCalls > 0 || extraInput > 0 || extraOutput > 0) {
+    const key = usageDayKey(now)
+    let currentDay = days.find(row => row.day === key)
+    if (currentDay === undefined) {
+      currentDay = { day: key, calls: 0, failedTurns: 0, inputTokens: 0, outputTokens: 0 }
+      days.push(currentDay)
+      days.sort((a, b) => a.day.localeCompare(b.day))
+    }
+    currentDay.calls += extraCalls
+    currentDay.inputTokens += extraInput
+    currentDay.outputTokens += extraOutput
+  }
+  return { ...summary, rows, days, calls: summary.calls + extraCalls,
+    usageReported: summary.usageReported || [...totals.values()].some(row => row.reported) }
 }
 
 /**
@@ -289,7 +376,7 @@ export { rateFromModelName }
  */
 export async function backfillUsageFromLedger(
   home: string,
-  recorder: { record(call: UsageCall): void; reset(): void },
+  recorder: { record(call: UsageCall): void; reset(): void; size?(): number },
   logger?: { info?(...args: unknown[]): void; warn?(...args: unknown[]): void },
 ): Promise<number> {
   let text: string
@@ -348,6 +435,9 @@ export async function backfillUsageFromLedger(
     })
   }
   if (calls.length === 0) return 0
+  // Startup backfill runs asynchronously. Never erase calls that completed
+  // while the file was being read; the live ledger reconciliation covers them.
+  if ((recorder.size?.() ?? 0) > 0) return 0
   recorder.reset()
   for (const call of calls) recorder.record(call)
   logger?.info?.(`heybash-xdpool: restored ${String(calls.length)} usage row(s) for ${today} from the ledger`)

@@ -33,7 +33,7 @@ const body = chainBody()
 
 describe('a channel member runs on the host lane', () => {
   it('has its own branch, checked before the pool', () => {
-    const hostAt = body.indexOf('if (member.host === true) {')
+    const hostAt = body.indexOf('if (member.host === true && member.routePoolRegion === undefined) {')
     const poolAt = body.indexOf('if (!member.aggregate) {')
     expect(hostAt, 'the host branch is gone — channel members would hit the pool').toBeGreaterThan(-1)
     expect(poolAt).toBeGreaterThan(-1)

@@ -160,6 +160,7 @@ export interface ChannelLane {
     modelId: string
     body: Record<string, unknown>
     signal: AbortSignal
+    sessionId?: string
   }) => AsyncGenerator<ChannelLaneEvent>
 }
 
@@ -433,6 +434,7 @@ async function* runTurn(input: {
   modelId: string
   body: Record<string, unknown>
   signal: AbortSignal
+  sessionId?: string
   attachments: ChannelLaneAttachments | undefined
 }): AsyncGenerator<ChannelLaneEvent> {
   const { llm, channel, modelId, body, signal, attachments } = input
@@ -450,6 +452,7 @@ async function* runTurn(input: {
     model: modelId,
     messages: converted.filter(message => message.role !== 'system'),
     signal,
+    ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
   }
   if (system.length > 0) options.system = system
     .map(message => message.content.map(block => typeof block.text === 'string' ? block.text : '').join(''))

@@ -1520,6 +1520,21 @@ export class WorkBuddyAccountPool {
     return this.accounts.filter(account => regionOf(account.credential.domain) === region)
   }
 
+  /** Eligible account identities for one routed model, without selecting or binding one. */
+  async routingAccounts(modelId: string, region?: WorkBuddyRegion, reserveExempt?: ReadonlySet<string>): Promise<readonly WorkBuddyAccount[]> {
+    if (this.accounts.length === 0) await this.scan()
+    return this.available(Date.now(), modelId, region, reserveExempt)
+  }
+
+  /** Acquire exactly the routed account while retaining all pool eligibility checks. */
+  async acquireRoutingAccount(accountId: string, modelId: string, region?: WorkBuddyRegion, reserveExempt?: ReadonlySet<string>): Promise<WorkBuddyAccount | undefined> {
+    if (this.accounts.length === 0) await this.scan()
+    const candidate = this.available(Date.now(), modelId, region, reserveExempt).find(account => account.id === accountId)
+    if (candidate === undefined || !await this.ensureFresh(candidate)) return undefined
+    // Refresh can change credential state; never bypass a concurrent cooldown.
+    return this.available(Date.now(), modelId, region, reserveExempt).find(account => account.id === accountId)
+  }
+
   /**
    * Accounts currently eligible to serve a request.
    *

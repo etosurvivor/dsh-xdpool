@@ -1361,6 +1361,10 @@ export declare class WorkBuddyAccountPool {
   warmExpiryReadingFor(accountId: string): void;
   /** All accounts, cooldown state included. */
   list(region?: WorkBuddyRegion): readonly WorkBuddyAccount[];
+  /** Eligible account identities for one routed model, without selecting or binding one. */
+  routingAccounts(modelId: string, region?: WorkBuddyRegion, reserveExempt?: ReadonlySet<string>): Promise<readonly WorkBuddyAccount[]>;
+  /** Acquire exactly the routed account while retaining all pool eligibility checks. */
+  acquireRoutingAccount(accountId: string, modelId: string, region?: WorkBuddyRegion, reserveExempt?: ReadonlySet<string>): Promise<WorkBuddyAccount | undefined>;
   /**
    * Accounts currently eligible to serve a request.
    *
@@ -3331,7 +3335,13 @@ interface ChannelLane {
     modelId: string;
     body: Record<string, unknown>;
     signal: AbortSignal;
+    sessionId?: string;
   }) => AsyncGenerator<ChannelLaneEvent>;
+}
+interface ChannelAccountRouting {
+  /** Undefined means the pack service is unavailable; [] means no eligible account. */
+  candidates(provider: string, model: string): readonly string[] | undefined;
+  run<T>(provider: string, model: string, accountId: string, action: () => Promise<T>): Promise<T>;
 }
 interface ShimLogger {
   info?(...args: unknown[]): void;
@@ -3467,6 +3477,8 @@ interface WorkBuddyShimOptions {
    * this shim, so this is also the only shim the LAN gateway can see.
    */
   channels?: ChannelLane;
+  /** Route-only access to individual accounts owned by the channel pack. */
+  channelAccountRouting?: ChannelAccountRouting;
   /**
    * The gateway allowlist, re-read per request.
    *

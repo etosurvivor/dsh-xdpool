@@ -683,24 +683,14 @@ function ChainEditor({
             <option value="round-robin">{t?.('route.strategyRoundRobin') ?? 'Round robin'}</option>
           </select>
         </label>
-        <label className="dsm-xdpool-rt-field">
-          <span>{t?.('route.stickyLimit') ?? 'Turns per member'}</span>
-          <input
-            type="number"
-            min={1}
-            value={draft.stickyLimit}
-            onChange={event => {
-              const parsed = Number.parseInt(event.target.value, 10)
-              // A non-finite or non-positive value would be normalised away by the
-              // server, so the field would visibly snap back after a save.
-              onChange({ stickyLimit: Number.isFinite(parsed) && parsed > 0 ? parsed : 1 })
-            }}
-          />
-        </label>
       </div>
-      <p className="dsm-xdpool-rt-hint">{t?.('route.stickyHint') ?? ''}</p>
+      <p className="dsm-xdpool-rt-hint">{draft.strategy === 'round-robin'
+        ? (t?.('route.stickyHint') ?? '')
+        : (t?.('route.fallbackHint') ?? 'Each request starts from the first available member.')}</p>
 
-      <p className="dsm-xdpool-rt-hint">{t?.('route.platformOrder') ?? 'Platform order (higher is tried first)'}</p>
+      <p className="dsm-xdpool-rt-hint">{draft.strategy === 'round-robin'
+        ? (t?.('route.platformOrderLru') ?? 'Platform order breaks ties between equally unused routes')
+        : (t?.('route.platformOrder') ?? 'Platform order (higher is tried first)')}</p>
       {draft.platforms.length === 0
         ? <p className="dsm-xdpool-rt-warn">{t?.('route.noMembers') ?? 'Add at least one member.'}</p>
         : <div className="dsm-xdpool-rt-laneboxes">
@@ -846,7 +836,7 @@ function ChainEditor({
               {t?.('route.addPlatform') ?? 'Add platform'}
             </button>
           </div>}
-      <p className="dsm-xdpool-rt-hint">{t?.('route.platformHint') ?? 'Higher is tried first; the same applies to models inside one platform.'}</p>
+      {draft.strategy === 'fallback' ? <p className="dsm-xdpool-rt-hint">{t?.('route.platformHint') ?? 'Higher is tried first; the same applies to models inside one platform.'}</p> : null}
     </div>
   )
 }

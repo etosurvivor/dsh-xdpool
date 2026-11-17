@@ -56,7 +56,7 @@ describe('a hung member cannot hold the whole chain', () => {
   it('passes the member signal to the work, not the caller signal', () => {
     // The whole point: the call that may hang must be the one that can be
     // aborted by the deadline. Handing it `signal` would leave the timeout inert.
-    expect(body).toContain('conversationKey, memberSignal)')
+    expect(body).toContain('conversationKey, memberSignal, poolRegion)')
     expect(body).toContain('prepared, memberSignal,')
     expect(body).toContain('signal: memberSignal,')
   })

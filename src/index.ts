@@ -240,6 +240,7 @@ export function combosStatusOf(
 import { WorkBuddyScheduler, type AutomationJobKind, type AutomationLedger, type AutomationOptions } from './scheduler.ts'
 import { channelListableAsRows, createWorkBuddyShim, type WorkBuddyShim } from './shim.ts'
 import { createChannelLane, type ChannelLaneLlm } from './channel-lane.ts'
+import { createChannelAccountRouting, type ChannelAccountPool } from './channel-account-routing.ts'
 import { backfillUsageFromLedger, readCreditSpend, reconcileChannelLedger } from './credit-report.ts'
 import { ratesFor, type CreditRates } from './credits.ts'
 import { createPoolRelay, newRelayKey, relayDocumentOf, RELAY_DEFAULT_PORT, RELAY_HOSTS, type RelaySettings } from './relay.ts'
@@ -1293,6 +1294,7 @@ function canonicalJson(value: unknown): string {
   void doubaoModelsReady.catch((error: unknown) => ctx.logger.warn('heybash-xdpool: could not load Doubao model selection', error))
   const doubaoLlm = new DoubaoAdapter(() => doubaoSession, { ready: doubaoModelsReady, store: doubaoModelStore })
   const hostLlm = ctx.llm as unknown as ChannelLaneLlm
+  const channelAccountRouting = createChannelAccountRouting(() => ctx.get('accountPool') as ChannelAccountPool | undefined)
   const channelLlm: ChannelLaneLlm = {
     listModels: async (provider: string) =>
       provider === DOUBAO_LANE_CHANNEL ? doubaoLlm.listModels() : hostLlm.listModels(provider),
@@ -1404,6 +1406,7 @@ function canonicalJson(value: unknown): string {
       // own. It is also the shim the LAN relay forwards to, which makes this the
       // one place those models become reachable over OpenAI wire.
       channels: channelLane,
+      channelAccountRouting,
       comboAffinityPath: join(pluginDataDir(), 'combo-affinity.json'),
       parentSessionOf: sessionId => {
         const agents = ctx.get('agents') as { get?: (id: string) => { session?: { header?: { parentSession?: unknown; origin?: unknown } } } | undefined } | undefined

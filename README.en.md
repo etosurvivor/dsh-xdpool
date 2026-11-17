@@ -78,7 +78,7 @@ Measured across four accounts, one pass collected **3300 credits and 135 energy*
 
 ### 3. Routing-chain reasoning effort
 
-In round-robin mode, requests in the same DSH session stay with the assigned model member until it fails or cools down. New sessions are distributed by model member; subagents use separate sessions and prefer members other than their parent's, while retaining it as a fallback. Subsequent tasks in the same session retain the assignment because DSH supplies a session ID. External gateway clients can provide a stable `x-session-id`; requests without one rotate individually. Priority fallback mode is unchanged.
+In balanced mode, each channel, account and model combination is independent. New sessions choose the least recently used available combination; an existing session keeps its channel, account and model until failure or cooldown. Subagents use separate sessions and prefer a combination other than their parent's. Routing recency and session bindings survive restarts. External gateway clients may provide `x-session-id`; requests without one select independently. Priority fallback mode is unchanged.
 
 WorkBuddy China and Global can be added as separate route members. Global uses its own accounts and live model catalogue; existing bare model IDs continue to mean the China region. Unavailable Global models are not offered when there is no Global account.
 

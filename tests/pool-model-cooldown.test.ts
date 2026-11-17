@@ -35,6 +35,31 @@ async function fakeAuthDir(count = 1): Promise<string> {
 }
 
 describe('per-model cooldown', () => {
+  it('pins an exact routing account without bypassing model cooldown or disabled state', async () => {
+    const pool = new WorkBuddyAccountPool({ authDirs: [await fakeAuthDir(2)], distribution: 'balanced' })
+    await pool.scan()
+    const [a, b] = pool.list() as [WorkBuddyAccount, WorkBuddyAccount]
+    for (let n = 0; n < 4; n += 1) expect((await pool.acquireRoutingAccount(a.id, 'hy3', 'cn'))?.id).toBe(a.id)
+    pool.penalize(a.id, Date.now() + 60_000, 'hy3')
+    expect(await pool.acquireRoutingAccount(a.id, 'hy3', 'cn')).toBeUndefined()
+    expect((await pool.routingAccounts('hy3', 'cn')).map(account => account.id)).toEqual([b.id])
+    expect((await pool.acquireRoutingAccount(a.id, 'hy4-preview', 'cn'))?.id).toBe(a.id)
+    pool.applyConfig({ disabledAccountIds: [b.id] })
+    expect(await pool.acquireRoutingAccount(b.id, 'hy3', 'cn')).toBeUndefined()
+  })
+
+  it('respects an account credit reserve unless that account has a fresh free-model exemption', async () => {
+    const pool = new WorkBuddyAccountPool({ authDirs: [await fakeAuthDir(1)] })
+    await pool.scan()
+    const [account] = pool.list()
+    pool.applyConfig({ creditReserves: { [account!.id]: 100 } })
+    pool.noteCredits(account!.id, 50)
+    expect(await pool.routingAccounts('hy3', 'cn')).toEqual([])
+    expect(await pool.acquireRoutingAccount(account!.id, 'hy3', 'cn')).toBeUndefined()
+    const exempt = new Set([account!.id])
+    expect((await pool.routingAccounts('hy3', 'cn', exempt)).map(item => item.id)).toEqual([account!.id])
+    expect((await pool.acquireRoutingAccount(account!.id, 'hy3', 'cn', exempt))?.id).toBe(account!.id)
+  })
   it('cooling one model on the only account leaves its other models usable', async () => {
     const pool = new WorkBuddyAccountPool({ authDirs: [await fakeAuthDir(1)] })
     await pool.scan()

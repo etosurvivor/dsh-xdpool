@@ -50,6 +50,7 @@ import {
 } from './non-streaming.ts'
 import { FREE_CHANNEL, FREE_MODEL_PREFIX } from './free-catalog.ts'
 import { ChannelRequestError, type ChannelLane } from './channel-lane.ts'
+import type { ChannelAccountRouting } from './channel-account-routing.ts'
 export interface ShimLogger {
   info?(...args: unknown[]): void
   warn(...args: unknown[]): void
@@ -233,6 +234,8 @@ export interface WorkBuddyShimOptions {
    * this shim, so this is also the only shim the LAN gateway can see.
    */
   channels?: ChannelLane
+  /** Route-only access to individual accounts owned by the channel pack. */
+  channelAccountRouting?: ChannelAccountRouting
   /**
    * The gateway allowlist, re-read per request.
    *
@@ -462,18 +465,26 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
   // Provisional bindings are installed before the first await so concurrent
   // requests in one session start with the same member. A failed first request
   // does not become a permanent assignment. No conversation text is stored.
-  const comboAffinities = new Map<string, { member: string; confirmed: boolean; reservation?: ComboRotationTicket }>()
+  const comboAffinities = new Map<string, { member: string; accountId?: string; confirmed: boolean; reservation?: ComboRotationTicket }>()
+  const comboLastUsed = new Map<string, number>()
+  const comboSessionLocks = new Map<string, Promise<void>>()
   const knownComboMembers = new Map<string, ComboMember>()
   const lastRoutes = new Map<string, string>()
   const COMBO_AFFINITY_LIMIT = 5000
   if (options.comboAffinityPath !== undefined) {
     try {
-      const parsed = JSON.parse(readFileSync(options.comboAffinityPath, 'utf8')) as { bindings?: unknown }
+      const parsed = JSON.parse(readFileSync(options.comboAffinityPath, 'utf8')) as { bindings?: unknown; accounts?: Record<string, unknown>; lastUsed?: Record<string, unknown> }
       if (typeof parsed.bindings === 'object' && parsed.bindings !== null && !Array.isArray(parsed.bindings)) {
         for (const [key, member] of Object.entries(parsed.bindings).slice(-COMBO_AFFINITY_LIMIT)) {
           if (key.length <= 1100 && typeof member === 'string' && member.length > 0 && member.length <= 1024) {
-            comboAffinities.set(key, { member, confirmed: true })
+            const accountId = parsed.accounts?.[key]
+            comboAffinities.set(key, { member, confirmed: true, ...(typeof accountId === 'string' && accountId.length <= 1024 ? { accountId } : {}) })
           }
+        }
+      }
+      if (typeof parsed.lastUsed === 'object' && parsed.lastUsed !== null) {
+        for (const [key, value] of Object.entries(parsed.lastUsed).slice(-COMBO_AFFINITY_LIMIT)) {
+          if (key.length <= 2200 && typeof value === 'number' && Number.isFinite(value) && value >= 0) comboLastUsed.set(key, value)
         }
       }
     } catch { /* First run or invalid state: choose a fresh member. */ }
@@ -484,10 +495,51 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     try {
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
       const bindings = Object.fromEntries([...comboAffinities].filter(([, value]) => value.confirmed).map(([key, value]) => [key, value.member]))
+      const accounts = Object.fromEntries([...comboAffinities].filter(([, value]) => value.confirmed && value.accountId !== undefined).map(([key, value]) => [key, value.accountId]))
       const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
-      writeFileSync(tmp, JSON.stringify({ version: 1, bindings }), { encoding: 'utf8', mode: 0o600 })
+      writeFileSync(tmp, JSON.stringify({ version: 2, bindings, accounts, lastUsed: Object.fromEntries(comboLastUsed) }), { encoding: 'utf8', mode: 0o600 })
       renameSync(tmp, path)
     } catch (error) { logger?.warn?.('heybash-xdpool: could not save route affinity', error) }
+  }
+  const candidateKey = (member: string, accountId?: string): string => JSON.stringify([member, accountId ?? ''])
+  let lastUseSequence = Math.max(0, ...comboLastUsed.values())
+  const recordCandidateUse = (member: string, accountId?: string): void => {
+    const key = candidateKey(member, accountId)
+    lastUseSequence = Math.max(Date.now(), lastUseSequence + 1)
+    comboLastUsed.delete(key)
+    comboLastUsed.set(key, lastUseSequence)
+    while (comboLastUsed.size > COMBO_AFFINITY_LIMIT) {
+      const oldest = comboLastUsed.keys().next().value
+      if (oldest === undefined) break
+      comboLastUsed.delete(oldest)
+    }
+    saveComboAffinities()
+  }
+  // A session can issue title, tool and main requests concurrently. Serialize
+  // them until the response closes so a shared failure has one fallback choice.
+  const withComboSessionLock = async (key: string, signal: AbortSignal, res: ServerResponse, action: () => Promise<void>): Promise<void> => {
+    const previous = comboSessionLocks.get(key)
+    let release!: () => void
+    const current = new Promise<void>(resolve => { release = resolve })
+    comboSessionLocks.set(key, current)
+    if (previous !== undefined) await previous
+    const onFinished = (): void => { done() }
+    let done!: () => void
+    const finished = new Promise<void>(resolve => { done = resolve })
+    res.once('finish', onFinished)
+    res.once('close', onFinished)
+    signal.addEventListener('abort', onFinished, { once: true })
+    try {
+      if (signal.aborted || res.destroyed) return
+      await action()
+      if (!res.writableFinished && !res.destroyed) await finished
+    } finally {
+      res.removeListener('finish', onFinished)
+      res.removeListener('close', onFinished)
+      signal.removeEventListener('abort', onFinished)
+      if (comboSessionLocks.get(key) === current) comboSessionLocks.delete(key)
+      release()
+    }
   }
   // Keep a small, content-free trace: successful fallbacks are otherwise hidden
   // from the host session log, making it impossible to explain a model switch.
@@ -527,8 +579,8 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
   })
   // Try ordinary eligible accounts first: a reserve on another account must
   // never put a catalog request on the healthy account's critical path.
-  async function acquireForRequest(modelId: string | undefined, conversationKey: string | undefined, signal: AbortSignal) {
-    const ordinary = await pool.acquire(modelId, region, conversationKey)
+  async function acquireForRequest(modelId: string | undefined, conversationKey: string | undefined, signal: AbortSignal, accountRegion = region) {
+    const ordinary = await pool.acquire(modelId, accountRegion, conversationKey)
     const reserveExempt = new Set<string>()
     if (ordinary !== undefined || modelId === undefined || signal.aborted) {
       return { account: ordinary, reserveExempt }
@@ -536,7 +588,7 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     // Pricing is credential-specific (including enterprise identity). Confirm
     // each eligible held account separately, never granting a pool-wide bypass.
     const now = Date.now()
-    const held = pool.list(region).filter(account => pool.isReserved(account.id)
+    const held = pool.list(accountRegion).filter(account => pool.isReserved(account.id)
       && !pool.isDisabled(account.id) && (account.credentialDeadUntilMs ?? 0) <= now
       && account.cooldownUntilMs <= now && (account.modelCooldowns[modelId] ?? 0) <= now)
     const pricingSignal = AbortSignal.any([signal, AbortSignal.timeout(5000)])
@@ -556,7 +608,7 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       }
     }))
     if (signal.aborted) return { account: undefined, reserveExempt }
-    return { account: await pool.acquire(modelId, region, conversationKey, reserveExempt), reserveExempt }
+    return { account: await pool.acquire(modelId, accountRegion, conversationKey, reserveExempt), reserveExempt }
   }
   /**
    * "The same model has a paid row" sentence for a 429 body, or undefined.
@@ -1182,17 +1234,7 @@ function withBareModelId(raw: string, modelId: string): string {
       binding = undefined
     }
     let reservation: ComboRotationTicket | undefined
-    let ordered = comboChain(row, binding === undefined
-      ? { onReservation: ticket => { reservation = ticket } }
-      : { peek: true })
-    // A child is an independent session: give other models priority over the
-    // parent's selected member, but retain the parent as a final fallback.
-    if (parentKey !== undefined && row.strategy === 'round-robin') {
-      const parentMember = comboAffinities.get(`${row.id}:${parentKey}`)?.member
-      if (parentMember !== undefined && ordered.length > 1) {
-        ordered = [...ordered.filter(id => id !== parentMember), ...ordered.filter(id => id === parentMember)]
-      }
-    }
+    const ordered = row.strategy === 'round-robin' ? row.models : comboChain(row, { onReservation: ticket => { reservation = ticket } })
     const preferred = binding?.member
     const resolved = ordered.map(id => resolveComboMember(id, sources)).filter((member): member is ComboMember => member !== undefined)
     for (const member of resolved) {
@@ -1202,12 +1244,9 @@ function withBareModelId(raw: string, modelId: string): string {
         if (oldest !== undefined) knownComboMembers.delete(oldest)
       }
     }
-    let members = (preferred === undefined ? ordered : [preferred, ...ordered.filter(id => id !== preferred)])
-      .map(modelId => resolveComboMember(modelId, sources))
-      .filter((member): member is ComboMember => member !== undefined)
+    let members = [...resolved]
     if (preferred !== undefined && !members.some(member => member.modelId === preferred)) {
       const remembered = knownComboMembers.get(preferred)
-      // Never route a request sized for a larger context to stale smaller metadata.
       if (remembered !== undefined && remembered.contextWindow >= row.contextWindow) members.unshift(remembered)
     }
     let temporarilyMissingPreferred = preferred !== undefined && !members.some(member => member.modelId === preferred)
@@ -1216,23 +1255,75 @@ function withBareModelId(raw: string, modelId: string): string {
     const hasImage = Array.isArray(body.messages) && body.messages.some(message =>
       Array.isArray(message.content) && message.content.some((part: unknown) =>
         typeof part === 'object' && part !== null && ['image_url', 'input_image', 'image'].includes(String((part as { type?: unknown }).type))))
-    if (hasImage) {
-      members = members.filter(member => member.supportsImages)
-      if (members.length === 0) {
-        writeOpenAIError(res, 400, 'combo_no_image_member', `chain ${row.id} has no image-capable member available`)
-        return
-      }
-    }
+    if (hasImage) members = members.filter(member => member.supportsImages)
     if (members.length === 0) {
-      // Reachable only if a chain row survived a refresh whose members have all
-      // since gone away. Answering "no member" names the real problem; the
-      // alternative — falling through to the pool — would send `combo:x` to a
-      // gateway that has never heard of it.
-      writeOpenAIError(res, 503, 'combo_empty', `chain ${row.id} has no member model available right now`)
+      writeOpenAIError(res, hasImage ? 400 : 503, hasImage ? 'combo_no_image_member' : 'combo_empty',
+        hasImage ? `chain ${row.id} has no image-capable member available` : `chain ${row.id} has no member model available right now`)
       return
     }
+
+    type RouteCandidate = ComboMember & { routeAccountId?: string; routePoolRegion?: WorkBuddyRegion; routePoolModel?: string; routeReserveExempt?: ReadonlySet<string> }
+    const groups: RouteCandidate[][] = await Promise.all(members.map(async member => {
+      const global = member.host === true && member.modelId.startsWith('xdpool-global:')
+        && row.strategy === 'round-robin' && typeof pool.routingAccounts === 'function'
+      if ((!member.aggregate && member.host !== true) || global) {
+        const routePoolRegion = global ? 'global' : (region ?? 'cn')
+        const routePoolModel = global ? member.modelId.slice('xdpool-global:'.length) : member.modelId
+        if (row.strategy === 'round-robin' && typeof pool.routingAccounts === 'function') {
+          let accounts = await pool.routingAccounts(routePoolModel, routePoolRegion)
+          let routeReserveExempt: ReadonlySet<string> | undefined
+          if (accounts.length === 0 && typeof pool.acquire === 'function') {
+            const priced = await acquireForRequest(routePoolModel, sessionKey, signal, routePoolRegion)
+            if (priced.reserveExempt.size > 0) {
+              routeReserveExempt = priced.reserveExempt
+              accounts = await pool.routingAccounts(routePoolModel, routePoolRegion, routeReserveExempt)
+            }
+          }
+          return accounts.map(account => ({ ...member, routeAccountId: account.id, routePoolRegion, routePoolModel,
+            ...(routeReserveExempt === undefined ? {} : { routeReserveExempt }) }))
+        }
+        return [{ ...member, routePoolRegion, routePoolModel }]
+      }
+      if (member.host === true && row.strategy === 'round-robin') {
+        const target = channels?.resolve(member.modelId)
+        const ids = target === undefined ? undefined : options.channelAccountRouting?.candidates(target.channel, target.modelId)
+        if (ids !== undefined) return ids.map(routeAccountId => ({ ...member, routeAccountId }))
+        // A missing pack service must not silently fall back to uncontrolled
+        // account selection. Doubao has one separately managed session.
+        if (options.channelAccountRouting !== undefined && target?.channel !== 'doubao') return []
+      }
+      return [{ ...member }]
+    }))
+    // Interleave never-used accounts across configured members; every account +
+    // model remains an independent candidate, including when a provider has many.
+    const candidates: RouteCandidate[] = []
+    const width = Math.max(0, ...groups.map(group => group.length))
+    for (let i = 0; i < width; i += 1) for (const group of groups) if (group[i] !== undefined) candidates.push(group[i]!)
+    if (candidates.length === 0) {
+      writeOpenAIError(res, 503, 'combo_empty', `chain ${row.id} has no eligible account/model combination`)
+      return
+    }
+    // Another concurrent call may have installed the provisional session pin
+    // while the account lists above were being read.
+    if (affinityKey !== undefined) binding = comboAffinities.get(affinityKey)
+    const parent = parentKey === undefined ? undefined : comboAffinities.get(`${row.id}:${parentKey}`)
+    const compareCandidates = (a: RouteCandidate, b: RouteCandidate): number => {
+      const ak = candidateKey(a.modelId, a.routeAccountId), bk = candidateKey(b.modelId, b.routeAccountId)
+      const ap = parent !== undefined && a.modelId === parent.member && a.routeAccountId === parent.accountId ? 1 : 0
+      const bp = parent !== undefined && b.modelId === parent.member && b.routeAccountId === parent.accountId ? 1 : 0
+      return ap - bp || (comboLastUsed.get(ak) ?? 0) - (comboLastUsed.get(bk) ?? 0)
+    }
+    if (row.strategy === 'round-robin') {
+      candidates.sort(compareCandidates)
+    }
+    if (binding !== undefined) {
+      const index = candidates.findIndex(candidate => candidate.modelId === binding!.member
+        && (binding!.accountId === undefined || candidate.routeAccountId === binding!.accountId))
+      if (index > 0) candidates.unshift(candidates.splice(index, 1)[0]!)
+    }
     if (affinityKey !== undefined && binding === undefined) {
-      binding = { member: members[0]!.modelId, confirmed: false, ...(reservation === undefined ? {} : { reservation }) }
+      const selected = candidates[0]!
+      binding = { member: selected.modelId, ...(selected.routeAccountId === undefined ? {} : { accountId: selected.routeAccountId }), confirmed: false }
       comboAffinities.set(affinityKey, binding)
       while (comboAffinities.size > COMBO_AFFINITY_LIMIT) {
         const oldest = comboAffinities.keys().next().value
@@ -1241,7 +1332,9 @@ function withBareModelId(raw: string, modelId: string): string {
       }
     }
     const observedMember = binding?.member
-    const settleMember = (memberId: string): void => {
+    const observedAccount = binding?.accountId
+    const settleMember = (memberId: string, accountId?: string): void => {
+      recordCandidateUse(memberId, accountId)
       if (sessionKey !== undefined) {
         const key = `${row.id}:${sessionKey}`
         lastRoutes.delete(key)
@@ -1257,28 +1350,21 @@ function withBareModelId(raw: string, modelId: string): string {
         return
       }
       if (comboAffinities.get(affinityKey) !== binding) return
-      // A catalog outage is not proof that the configured member failed. Use
-      // another member for this request, then try the original when it returns.
       if (temporarilyMissingPreferred && binding.confirmed) return
-      // A concurrent call already switched this session. An older response
-      // must not silently move it back to the previous member.
-      if (binding.confirmed && binding.member !== observedMember) return
-      const isNewAssignment = !binding.confirmed || binding.member !== memberId
-      if (binding.confirmed && binding.member !== memberId) {
-        traceCombo({ chain: row.id, session: sessionKey, event: 'rebind', from: binding.member, to: memberId })
-      }
-      if (binding.confirmed && binding.member !== memberId && reservation === undefined) {
-        comboChain(row, { onReservation: ticket => { reservation = ticket } })
+      if (binding.confirmed && (binding.member !== observedMember || binding.accountId !== observedAccount)) return
+      const changed = !binding.confirmed || binding.member !== memberId || binding.accountId !== accountId
+      if (binding.confirmed && changed) {
+        const accountHash = (id: string | undefined): string | undefined => id === undefined ? undefined : createHash('sha256').update(id).digest('hex').slice(0, 12)
+        traceCombo({ chain: row.id, session: sessionKey, event: 'rebind', from: binding.member, to: memberId,
+          fromAccount: accountHash(binding.accountId), toAccount: accountHash(accountId) })
       }
       binding.member = memberId
+      if (accountId === undefined) delete binding.accountId
+      else binding.accountId = accountId
       binding.confirmed = true
       comboAffinities.delete(affinityKey)
       comboAffinities.set(affinityKey, binding)
-      if (isNewAssignment) {
-        settleComboSuccess(row, reservation ?? binding.reservation, memberId)
-        delete binding.reservation
-        saveComboAffinities()
-      }
+      if (changed) saveComboAffinities()
     }
     const attempts: string[] = []
     let last: { kind: string; status: number; message: string } | undefined
@@ -1297,10 +1383,13 @@ function withBareModelId(raw: string, modelId: string): string {
      */
     const switches: string[] = []
     let memberStartedAt = Date.now()
+    let attemptedAccountId: string | undefined
     const noteSwitch = (member: string, kind: string, status: number, reason?: string): void => {
       switches.push(`${member} → ${kind} (${String(status)})`)
       traceCombo({ chain: row.id, session: sessionKey, event: 'skip', member, kind, status,
-        elapsedMs: Date.now() - memberStartedAt, ...(reason === undefined ? {} : { reason }) })
+        elapsedMs: Date.now() - memberStartedAt,
+        ...(attemptedAccountId === undefined ? {} : { account: createHash('sha256').update(attemptedAccountId).digest('hex').slice(0, 12) }),
+        ...(reason === undefined ? {} : { reason }) })
       logger?.warn?.(`heybash-xdpool: chain ${row.id} skipped ${member}: ${kind} (${String(status)}); trying next`)
     }
     // The chain path had no conversation identity at all, which meant a combo
@@ -1309,8 +1398,15 @@ function withBareModelId(raw: string, modelId: string): string {
     // same body, so every member of the chain files under one conversation.
     const conversationKey = sessionKey ?? conversationKeyOf(raw)
     const usageTurnId = randomBytes(8).toString('hex')
-    for (const member of members) {
+    const remainingCandidates = [...candidates]
+    while (remainingCandidates.length > 0) {
       if (signal.aborted) return
+      if (attempts.length > 0 && row.strategy === 'round-robin') remainingCandidates.sort(compareCandidates)
+      const member = remainingCandidates.shift()!
+      attemptedAccountId = member.routeAccountId
+      // A failed attempt also used this combination; otherwise a broken but
+      // uncooled endpoint would remain the oldest and be chosen on every task.
+      recordCandidateUse(member.modelId, member.routeAccountId)
       memberStartedAt = Date.now()
       attempts.push(member.modelId)
       // A per-member deadline, so one hung upstream cannot hold the whole chain.
@@ -1356,7 +1452,7 @@ function withBareModelId(raw: string, modelId: string): string {
        * promises, and streaming straight to the socket here would leave two models'
        * text spliced together on screen when a later member answered.
        */
-      if (member.host === true) {
+      if (member.host === true && member.routePoolRegion === undefined) {
         if (channels === undefined) {
           last = { kind: 'combo_config', status: 503, message: `member ${member.modelId} needs the login-channel lane, which this build does not mount` }
           noteSwitch(member.modelId, 'combo_config', 503)
@@ -1408,6 +1504,7 @@ function withBareModelId(raw: string, modelId: string): string {
             // channel adapter's own `model` field must not carry our composite id.
             body: JSON.parse(withBareModelId(raw, channelTarget.modelId)) as Record<string, unknown>,
             signal: memberSignal,
+            ...(sessionKey === undefined ? {} : { sessionId: sessionKey }),
           })) {
             // `continue` is deliberately NOT used inside this event loop: the
             // chain's diagnostic test counts every `continue` in this function as
@@ -1462,7 +1559,9 @@ function withBareModelId(raw: string, modelId: string): string {
         }
         }
         try {
-          await runHostAttempt(true)
+          if (member.routeAccountId !== undefined && options.channelAccountRouting !== undefined) {
+            await options.channelAccountRouting.run(channelTarget.channel, channelTarget.modelId, member.routeAccountId, () => runHostAttempt(true))
+          } else await runHostAttempt(true)
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : String(error)
           const kind = error instanceof ChannelRequestError ? 'client' : 'server'
@@ -1482,7 +1581,7 @@ function withBareModelId(raw: string, modelId: string): string {
         // Buffered payloads become the response, exactly as the aggregate branch
         // does below.
         recordHostCall(true)
-        settleMember(member.modelId)
+        settleMember(member.modelId, member.routeAccountId)
         if (wantsNonStreaming(raw)) {
           writeJson(res, 200, bufferedFramesToCompletion(hostFrames, member.modelId))
           return
@@ -1502,19 +1601,26 @@ function withBareModelId(raw: string, modelId: string): string {
         // Account-local rate limits must not make the whole WorkBuddy model
         // member look unavailable. Try distinct eligible accounts first.
         const memberRaw = withMemberReasoningEffort(
-          JSON.stringify({ ...(JSON.parse(raw) as Record<string, unknown>), model: member.modelId }),
+          JSON.stringify({ ...(JSON.parse(raw) as Record<string, unknown>), model: member.routePoolModel ?? member.modelId }),
           member.supportedEfforts,
         )
         let prepared: string | undefined
         const triedAccounts = new Set<string>()
-        const accountLimit = (): number => Math.min(maxAttempts, Math.max(1, pool.list(region).length))
+        const accountLimit = (): number => member.routeAccountId === undefined ? Math.min(maxAttempts, Math.max(1, pool.list(member.routePoolRegion ?? region).length)) : 1
         let poolLast: { kind: string; status: number; message: string } | undefined
         const tryPoolAccount = async (): Promise<boolean> => {
           if (memberSignal.aborted || triedAccounts.size >= accountLimit()) return false
-          const { account, reserveExempt } = await acquireForRequest(member.modelId, conversationKey, memberSignal)
+          const poolModel = member.routePoolModel ?? member.modelId
+          const poolRegion = member.routePoolRegion ?? region
+          const acquired = member.routeAccountId !== undefined
+            ? { account: typeof pool.acquireRoutingAccount === 'function'
+              ? await pool.acquireRoutingAccount(member.routeAccountId, poolModel, poolRegion, member.routeReserveExempt)
+              : undefined, reserveExempt: member.routeReserveExempt ?? new Set<string>() }
+            : await acquireForRequest(poolModel, conversationKey, memberSignal, poolRegion)
+          const { account, reserveExempt } = acquired
           if (account === undefined) {
             if (poolLast === undefined) {
-              const why = pool.unavailableReason(member.modelId, region, reserveExempt)
+              const why = pool.unavailableReason(poolModel, poolRegion, reserveExempt)
               poolLast = { kind: why.reason, status: REASON_STATUS[why.reason] ?? 503,
                 message: `member ${member.modelId} has no usable WorkBuddy account (${why.reason})` }
             }
@@ -1522,25 +1628,25 @@ function withBareModelId(raw: string, modelId: string): string {
           }
           if (triedAccounts.has(account.id)) return false
           triedAccounts.add(account.id)
-          prepared ??= client.prepareChatBodyFor(memberRaw, region ?? 'cn')
+          prepared ??= client.prepareChatBodyFor(memberRaw, poolRegion ?? 'cn')
           const result = await client.chatStream(account.credential, prepared, memberSignal, conversationKey)
           if (result.ok) {
             const memberUsage = usageRecorder === undefined
               ? undefined
-              : { recorder: usageRecorder, region: region ?? 'cn', model: member.modelId, turnId: usageTurnId }
+              : { recorder: usageRecorder, region: poolRegion ?? 'cn', model: poolModel, turnId: usageTurnId }
             if (wantsNonStreaming(raw)) {
               await serveSuccessfulJson(res, account, result, logger, refreshBalance, pool,
-                memberUsage, member.modelId, () => settleMember(member.modelId))
+                memberUsage, poolModel, () => settleMember(member.modelId, account.id))
             } else {
               await serveSuccessfulStream(res, account, result, logger, refreshBalance, pool,
-                memberUsage, () => settleMember(member.modelId))
+                memberUsage, () => settleMember(member.modelId, account.id))
             }
             return true
           }
-          usageRecorder?.record({ channel: 'workbuddy', region: region ?? 'cn', model: member.modelId,
+          usageRecorder?.record({ channel: 'workbuddy', region: poolRegion ?? 'cn', model: poolModel,
             account: account.label, turnId: usageTurnId, at: Date.now(), ok: false })
           poolLast = { kind: result.kind, status: result.status, message: result.message }
-          if (result.kind === 'soft_rate') pool.penalize(account.id, parseRateLimitReset(result.message), member.modelId)
+          if (result.kind === 'soft_rate') pool.penalize(account.id, parseRateLimitReset(result.message), poolModel)
           else if (result.kind === 'session_dead') pool.penalizeCredentialDead(account.id)
           else if (result.kind === 'risk_blocked') pool.penalize(account.id, Date.now() + 30 * 60_000)
           else if (result.kind === 'hard_credit') pool.penalizeExhausted(account.id)
@@ -1670,6 +1776,9 @@ function withBareModelId(raw: string, modelId: string): string {
     const raw = (await readBody(req)).toString('utf8')
     const controller = new AbortController()
     req.on('close', () => controller.abort())
+    // The request body may already be fully read when a client cancels while
+    // waiting for a response; in that case only the response socket closes.
+    res.on('close', () => { if (!res.writableFinished) controller.abort() })
     // The request's target model. Read BEFORE any WorkBuddy preparation: the
     // aggregate lane speaks a different wire and must see the caller's body
     // untouched, and `prepareChatBody` rewrites it for the WorkBuddy gateway.
@@ -1713,9 +1822,12 @@ function withBareModelId(raw: string, modelId: string): string {
       if (session !== undefined) {
         try { parent = options.parentSessionOf?.(session) } catch { /* unavailable host service */ }
       }
-      await serveComboCompletion(res, raw, comboRow, controller.signal,
-        session === undefined ? undefined : routingSessionKey(session),
-        parent === undefined || parent === '' || parent.length > 1024 ? undefined : routingSessionKey(parent))
+      const sessionKey = session === undefined ? undefined : routingSessionKey(session)
+      const parentKey = parent === undefined || parent === '' || parent.length > 1024 ? undefined : routingSessionKey(parent)
+      const serve = () => serveComboCompletion(res, raw, comboRow, controller.signal, sessionKey, parentKey)
+      if (sessionKey !== undefined && comboRow.strategy === 'round-robin') {
+        await withComboSessionLock(`${comboRow.id}:${sessionKey}`, controller.signal, res, serve)
+      } else await serve()
       return
     }
     // A `combo:` id that no longer resolves — the chain was disabled, or every

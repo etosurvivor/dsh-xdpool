@@ -1335,6 +1335,11 @@ function canonicalJson(value: unknown): string {
       | undefined,
     logger: ctx.logger,
   })
+  // The first catalogue read can race the asynchronous channel-pack mount.
+  // Do not retain that empty result for 60 seconds after adapters register.
+  // Invalidate only: asking for rows inside this event can recursively trigger
+  // our own adapter re-registration via aggregateCatalog.onChange.
+  ctx.on('llm/adapters-updated', () => { channelLane.invalidateAll() })
   invalidateDoubaoLane = () => {
     channelLane.invalidate(DOUBAO_LANE_CHANNEL)
     void channelLane.rows().catch((error: unknown) => ctx.logger.warn('heybash-xdpool: could not refresh Doubao model list', error))

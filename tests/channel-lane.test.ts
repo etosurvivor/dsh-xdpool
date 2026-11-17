@@ -84,6 +84,19 @@ function lane(
 }
 
 describe('channel listing', () => {
+  it('refreshes a cached empty startup roster immediately after adapters register', async () => {
+    let registered = false
+    const llm: ChannelLaneLlm = {
+      async listModels() { if (!registered) throw new Error('adapter not registered yet'); return [{ id: 'deepseek-v4.1-flash' }] },
+      stream: () => (async function* () {})(),
+    }
+    const channel = lane(llm, ['trae'])
+    expect(await channel.rows()).toEqual([])
+    registered = true
+    expect(await channel.rows()).toEqual([]) // the startup miss was cached
+    channel.invalidateAll() // the host emits llm/adapters-updated at registration
+    expect((await channel.rows()).map(row => row.id)).toEqual(['trae:deepseek-v4.1-flash'])
+  })
   it('names every row with its channel', async () => {
     const llm = fakeLlm({ models: { qoder: [{ id: 'Qwen3.8-Flash' }], trae: [{ id: 'dsv-pro', name: 'DS Pro' }] } })
     const rows = await lane(llm).rows()

@@ -3320,6 +3320,7 @@ type ChannelLaneEvent = {
 };
 interface ChannelLane {
   invalidate: (channel: string) => void;
+  invalidateAll: () => void;
   rows: () => Promise<readonly ChannelLaneRow[]>;
   resolve: (id: string) => {
     channel: string;

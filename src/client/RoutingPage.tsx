@@ -244,8 +244,15 @@ export function RoutingPage({ t }: RoutingPageProps) {
   }, [])
   useEffect(() => {
     const controller = new AbortController()
-    void load(controller.signal)
-    return () => { controller.abort() }
+    let pending = false
+    const refresh = async (): Promise<void> => {
+      if (pending) return
+      pending = true
+      try { await load(controller.signal) } finally { pending = false }
+    }
+    void refresh()
+    const timer = window.setInterval(() => { void refresh() }, 5000)
+    return () => { controller.abort(); window.clearInterval(timer) }
   }, [load])
   const combos = status?.combos ?? []
   const candidates = status?.candidates ?? []

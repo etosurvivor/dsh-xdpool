@@ -152,6 +152,7 @@ const LISTING_TTL_MS = 60_000
 
 export interface ChannelLane {
   invalidate: (channel: string) => void
+  invalidateAll: () => void
   rows: () => Promise<readonly ChannelLaneRow[]>
   resolve: (id: string) => { channel: string; modelId: string } | undefined
   turn: (input: {
@@ -238,8 +239,10 @@ export function createChannelLane(options: {
     return tracked
   }
 
+  const invalidate = (channel: string): void => { rosterGeneration += 1; generations.set(channel, (generations.get(channel) ?? 0) + 1); cache.delete(channel); inflight.delete(channel) }
   return {
-    invalidate: (channel: string) => { rosterGeneration += 1; generations.set(channel, (generations.get(channel) ?? 0) + 1); cache.delete(channel); inflight.delete(channel) },
+    invalidate,
+    invalidateAll: () => { for (const channel of providers()) invalidate(channel) },
     rows: async () => {
       for (let attempt = 0; attempt < 3; attempt += 1) {
         const revision = rosterGeneration

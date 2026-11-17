@@ -180,7 +180,7 @@ describe('balanced route members', () => {
       const first = await gateway({ one: ['a', 'b'] }, ['one:a', 'one:b'], new Set(), served, { path })
       await first(false, 'private-session-a')
       await first(false, 'private-session-b')
-      expect(await readFile(path, 'utf8')).not.toContain('private-session')
+      expect(await readFile(`${path}.sqlite-wal`, 'utf8')).not.toContain('private-session')
       await first.shim.close()
       resetComboRotation()
       const second = await gateway({ one: ['a', 'b'] }, ['one:a', 'one:b'], new Set(), served, { path })

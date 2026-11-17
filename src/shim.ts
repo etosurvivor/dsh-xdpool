@@ -15,7 +15,7 @@
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { Readable, Transform } from 'node:stream'
 import type { WorkBuddyAccount, WorkBuddyAccountPool } from './accounts.ts'
@@ -50,6 +50,7 @@ import {
 } from './non-streaming.ts'
 import { FREE_CHANNEL, FREE_MODEL_PREFIX } from './free-catalog.ts'
 import { ChannelRequestError, type ChannelLane } from './channel-lane.ts'
+import { ComboRouteState } from './combo-route-state.ts'
 import type { ChannelAccountRouting } from './channel-account-routing.ts'
 export interface ShimLogger {
   info?(...args: unknown[]): void
@@ -471,41 +472,25 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
   const knownComboMembers = new Map<string, ComboMember>()
   const lastRoutes = new Map<string, string>()
   const COMBO_AFFINITY_LIMIT = 5000
-  if (options.comboAffinityPath !== undefined) {
-    try {
-      const parsed = JSON.parse(readFileSync(options.comboAffinityPath, 'utf8')) as { bindings?: unknown; accounts?: Record<string, unknown>; lastUsed?: Record<string, unknown> }
-      if (typeof parsed.bindings === 'object' && parsed.bindings !== null && !Array.isArray(parsed.bindings)) {
-        for (const [key, member] of Object.entries(parsed.bindings).slice(-COMBO_AFFINITY_LIMIT)) {
-          if (key.length <= 1100 && typeof member === 'string' && member.length > 0 && member.length <= 1024) {
-            const accountId = parsed.accounts?.[key]
-            comboAffinities.set(key, { member, confirmed: true, ...(typeof accountId === 'string' && accountId.length <= 1024 ? { accountId } : {}) })
-          }
-        }
-      }
-      if (typeof parsed.lastUsed === 'object' && parsed.lastUsed !== null) {
-        for (const [key, value] of Object.entries(parsed.lastUsed).slice(-COMBO_AFFINITY_LIMIT)) {
-          if (key.length <= 2200 && typeof value === 'number' && Number.isFinite(value) && value >= 0) comboLastUsed.set(key, value)
-        }
-      }
-    } catch { /* First run or invalid state: choose a fresh member. */ }
+  const routeState = options.comboAffinityPath === undefined ? undefined : new ComboRouteState(options.comboAffinityPath)
+  const refreshBinding = (key: string | undefined): void => {
+    if (key === undefined || routeState === undefined) return
+    const saved = routeState.binding(key)
+    const current = comboAffinities.get(key)
+    if (current !== undefined && !current.confirmed) return
+    if (saved === undefined) comboAffinities.delete(key)
+    else if (current?.member !== saved.member || current.accountId !== saved.accountId) comboAffinities.set(key, saved)
   }
-  const saveComboAffinities = (): void => {
-    const path = options.comboAffinityPath
-    if (path === undefined) return
-    try {
-      mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
-      const bindings = Object.fromEntries([...comboAffinities].filter(([, value]) => value.confirmed).map(([key, value]) => [key, value.member]))
-      const accounts = Object.fromEntries([...comboAffinities].filter(([, value]) => value.confirmed && value.accountId !== undefined).map(([key, value]) => [key, value.accountId]))
-      const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
-      writeFileSync(tmp, JSON.stringify({ version: 2, bindings, accounts, lastUsed: Object.fromEntries(comboLastUsed) }), { encoding: 'utf8', mode: 0o600 })
-      renameSync(tmp, path)
-    } catch (error) { logger?.warn?.('heybash-xdpool: could not save route affinity', error) }
+  const refreshRecent = (): void => {
+    if (routeState === undefined) return
+    comboLastUsed.clear()
+    for (const [key, at] of routeState.recent()) comboLastUsed.set(key, at)
   }
   const candidateKey = (member: string, accountId?: string): string => JSON.stringify([member, accountId ?? ''])
   let lastUseSequence = Math.max(0, ...comboLastUsed.values())
   const recordCandidateUse = (member: string, accountId?: string): void => {
     const key = candidateKey(member, accountId)
-    lastUseSequence = Math.max(Date.now(), lastUseSequence + 1)
+    lastUseSequence = routeState === undefined ? Math.max(Date.now(), lastUseSequence + 1) : routeState.transaction(() => routeState.touch(key))
     comboLastUsed.delete(key)
     comboLastUsed.set(key, lastUseSequence)
     while (comboLastUsed.size > COMBO_AFFINITY_LIMIT) {
@@ -513,7 +498,6 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       if (oldest === undefined) break
       comboLastUsed.delete(oldest)
     }
-    saveComboAffinities()
   }
   // A session can issue title, tool and main requests concurrently. Serialize
   // them until the response closes so a shared failure has one fallback choice.
@@ -529,11 +513,15 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     res.once('finish', onFinished)
     res.once('close', onFinished)
     signal.addEventListener('abort', onFinished, { once: true })
+    let releaseShared: (() => void) | undefined
     try {
+      if (signal.aborted || res.destroyed) return
+      if (routeState !== undefined) releaseShared = await routeState.lockSession(key, signal)
       if (signal.aborted || res.destroyed) return
       await action()
       if (!res.writableFinished && !res.destroyed) await finished
     } finally {
+      releaseShared?.()
       res.removeListener('finish', onFinished)
       res.removeListener('close', onFinished)
       signal.removeEventListener('abort', onFinished)
@@ -1214,6 +1202,8 @@ function withBareModelId(raw: string, modelId: string): string {
       return
     }
     const affinityKey = sessionKey === undefined || row.strategy !== 'round-robin' ? undefined : `${row.id}:${sessionKey}`
+    refreshBinding(affinityKey)
+    refreshBinding(parentKey === undefined ? undefined : `${row.id}:${parentKey}`)
     let binding = affinityKey === undefined ? undefined : comboAffinities.get(affinityKey)
     const configured = store === undefined ? undefined : combosOf(store).find(chain => chain.id === row.id)
     const isConfigured = (member: string): boolean => configured === undefined || configured.models.some(id => {
@@ -1230,7 +1220,7 @@ function withBareModelId(raw: string, modelId: string): string {
     if (binding !== undefined && !isConfigured(binding.member)) {
       traceCombo({ chain: row.id, session: sessionKey, event: 'member_removed', member: binding.member })
       comboAffinities.delete(affinityKey!)
-      saveComboAffinities()
+      routeState?.transaction(() => routeState.deleteBinding(affinityKey!))
       binding = undefined
     }
     let reservation: ComboRotationTicket | undefined
@@ -1313,14 +1303,19 @@ function withBareModelId(raw: string, modelId: string): string {
       const bp = parent !== undefined && b.modelId === parent.member && b.routeAccountId === parent.accountId ? 1 : 0
       return ap - bp || (comboLastUsed.get(ak) ?? 0) - (comboLastUsed.get(bk) ?? 0)
     }
-    if (row.strategy === 'round-robin') {
-      candidates.sort(compareCandidates)
+    const orderAndReserve = (): void => {
+      refreshRecent()
+      if (row.strategy === 'round-robin') candidates.sort(compareCandidates)
+      if (binding !== undefined) {
+        const index = candidates.findIndex(candidate => candidate.modelId === binding!.member
+          && (binding!.accountId === undefined || candidate.routeAccountId === binding!.accountId))
+        if (index > 0) candidates.unshift(candidates.splice(index, 1)[0]!)
+      }
+      // Reserve the selected combination in the same transaction as ordering.
+      if (routeState !== undefined && row.strategy === 'round-robin') routeState.touch(candidateKey(candidates[0]!.modelId, candidates[0]!.routeAccountId))
     }
-    if (binding !== undefined) {
-      const index = candidates.findIndex(candidate => candidate.modelId === binding!.member
-        && (binding!.accountId === undefined || candidate.routeAccountId === binding!.accountId))
-      if (index > 0) candidates.unshift(candidates.splice(index, 1)[0]!)
-    }
+    if (routeState === undefined) orderAndReserve()
+    else routeState.transaction(orderAndReserve)
     if (affinityKey !== undefined && binding === undefined) {
       const selected = candidates[0]!
       binding = { member: selected.modelId, ...(selected.routeAccountId === undefined ? {} : { accountId: selected.routeAccountId }), confirmed: false }
@@ -1364,7 +1359,7 @@ function withBareModelId(raw: string, modelId: string): string {
       binding.confirmed = true
       comboAffinities.delete(affinityKey)
       comboAffinities.set(affinityKey, binding)
-      if (changed) saveComboAffinities()
+      if (changed) routeState?.transaction(() => routeState.setBinding(affinityKey, memberId, accountId))
     }
     const attempts: string[] = []
     let last: { kind: string; status: number; message: string } | undefined
@@ -1401,12 +1396,20 @@ function withBareModelId(raw: string, modelId: string): string {
     const remainingCandidates = [...candidates]
     while (remainingCandidates.length > 0) {
       if (signal.aborted) return
-      if (attempts.length > 0 && row.strategy === 'round-robin') remainingCandidates.sort(compareCandidates)
-      const member = remainingCandidates.shift()!
+      const takeNext = (): RouteCandidate => {
+        if (attempts.length > 0 && row.strategy === 'round-robin') {
+          refreshRecent()
+          remainingCandidates.sort(compareCandidates)
+        }
+        const next = remainingCandidates.shift()!
+        if (routeState !== undefined) routeState.touch(candidateKey(next.modelId, next.routeAccountId))
+        return next
+      }
+      const member = routeState === undefined ? takeNext() : routeState.transaction(takeNext)
       attemptedAccountId = member.routeAccountId
       // A failed attempt also used this combination; otherwise a broken but
       // uncooled endpoint would remain the oldest and be chosen on every task.
-      recordCandidateUse(member.modelId, member.routeAccountId)
+      if (routeState === undefined) recordCandidateUse(member.modelId, member.routeAccountId)
       memberStartedAt = Date.now()
       attempts.push(member.modelId)
       // A per-member deadline, so one hung upstream cannot hold the whole chain.
@@ -2194,6 +2197,7 @@ function withBareModelId(raw: string, modelId: string): string {
       `workbuddy upstream ${last.kind} (http ${last.status}) after ${tried.length} account(s) [${tried.join(' → ')}]: ${last.message.slice(0, 400)}`,
     )
   }
+  let closing: Promise<void> | undefined
   return {
     ready,
     baseUrl,
@@ -2202,8 +2206,9 @@ function withBareModelId(raw: string, modelId: string): string {
     routeLastUsed: async (sessionId, chainId) => {
       if (sessionId === '' || sessionId.length > 1024 || !isComboId(chainId)) return undefined
       const key = `${chainId}:${routingSessionKey(sessionId)}`
+      refreshBinding(key)
       const bound = comboAffinities.get(key)
-      const id = lastRoutes.get(key) ?? (bound?.confirmed === true ? bound.member : undefined)
+      const id = (bound?.confirmed === true ? bound.member : undefined) ?? lastRoutes.get(key)
       const row = aggregate?.catalog.findCombo(chainId)
       if (id === undefined || row === undefined || !row.models.includes(id)) return undefined
       const member = resolveComboMember(id, {
@@ -2219,9 +2224,10 @@ function withBareModelId(raw: string, modelId: string): string {
           : 'WorkBuddy 国内版'
       return { channel, model: member.name }
     },
-    close: () =>
-      new Promise<void>((resolve, reject) => {
-        server.close(() => resolve())
+    close: () => closing ??= new Promise<void>((resolve, reject) => {
+        server.close(() => {
+          void Promise.all([...comboSessionLocks.values()]).then(() => { routeState?.close(); resolve() }, reject)
+        })
         server.closeAllConnections()
         server.once('error', reject)
       }),

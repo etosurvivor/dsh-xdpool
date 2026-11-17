@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AggregateCatalog } from '../src/aggregate.ts'
@@ -152,12 +152,67 @@ describe('least recently used account/model routes', () => {
       const first = await setup(file)
       await first.ask('one')
       await first.ask('two')
-      expect(await readFile(file, 'utf8')).not.toContain('one')
+      expect(await readFile(`${file}.sqlite-wal`, 'utf8')).not.toContain('one')
       await first.shim.close()
       const next = await setup(file)
       await next.ask('one')
       await next.ask('new')
       expect(next.served).toEqual(['wb:a:x', 'wb:a:y'])
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
+
+  it('coordinates independent hosts sharing a data directory', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'xdpool-shared-'))
+    try {
+      const path = join(dir, 'state.json')
+      const a = await setup(path), b = await setup(path)
+      await Promise.all([a.ask('one'), b.ask('two')])
+      expect(new Set([...a.served, ...b.served]).size).toBe(2)
+      await b.ask('one')
+      await a.ask('two')
+      expect(b.served[1]).toBe(a.served[0])
+      expect(a.served[1]).toBe(b.served[0])
+      await Promise.all([a.ask('same'), b.ask('same')])
+      expect(a.served[2]).toBe(b.served[2])
+      await a.shim.close(); await b.shim.close()
+      const next = await setup(path)
+      await next.ask('one'); await next.ask('two'); await next.ask('same')
+      expect(next.served).toEqual([a.served[0], b.served[0], a.served[2]])
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
+
+  it('releases cross-host waiters on cancellation without breaking the active session', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'xdpool-shared-cancel-'))
+    try {
+      const path = join(dir, 'state.json')
+      const a = await setup(path), b = await setup(path)
+      await a.ask('same')
+      let started!: () => void
+      const blocked = new Promise<void>(resolve => { started = resolve })
+      a.blockOnce.set('wb:a:x', started)
+      const active = new AbortController(), waiting = new AbortController()
+      const first = a.ask('same', true, active.signal).catch(() => undefined)
+      await blocked
+      const second = b.ask('same', true, waiting.signal).catch(() => undefined)
+      waiting.abort()
+      await second
+      active.abort()
+      await first
+      await b.ask('same')
+      expect(b.served).toEqual(['wb:a:x'])
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
+
+  it('imports existing JSON bindings and usage when migrating', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'xdpool-migrate-'))
+    try {
+      const path = join(dir, 'state.json')
+      const { createHash } = await import('node:crypto')
+      const key = `combo:test:${createHash('sha256').update('old').digest('hex')}`
+      await writeFile(path, JSON.stringify({ version: 2, bindings: { [key]: 'x' }, accounts: { [key]: 'b' }, lastUsed: { [JSON.stringify(['x', 'a'])]: 12 } }))
+      const x = await setup(path)
+      await x.ask('old')
+      expect(x.served).toEqual(['wb:b:x'])
     } finally { await rm(dir, { recursive: true, force: true }) }
   })
 

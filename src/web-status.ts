@@ -23,6 +23,7 @@ import type { WorkBuddyAccount, WorkBuddyAccountPool } from './accounts.ts'
 import type { WorkBuddyCatalog } from './catalog.ts'
 import { isGatewayRejectionError, regionOf, type WorkBuddyUpstreamClient } from './upstream.ts'
 import type { WorkBuddyShim } from './shim.ts'
+import type { RouteReading } from './route-stream.ts'
 import type { UsageSummary } from './stats.ts'
 import { isAutomationJobKind, type AutomationRunSummary, type AutomationStatus } from './scheduler.ts'
 import { hasModelsListing, isProviderId } from './providers.ts'
@@ -97,7 +98,7 @@ export type { PoolWebStatus }
 /** Constructor dependencies — a narrow slice of the pool runtime. */
 export interface PoolStatusRouteOptions {
   pool: WorkBuddyAccountPool
-  routeLastUsed?: (sessionId: string, chainId: string) => Promise<{ channel: string; model: string } | undefined>
+  routeLastUsed?: (sessionId: string, chainId: string) => Promise<RouteReading | undefined>
   /** Re-announce models after a rescan changes region availability. */
   onPoolChanged?: () => void
   /** One catalog per region; the card reads the one for its active tab. */

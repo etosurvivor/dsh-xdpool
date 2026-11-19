@@ -16,6 +16,7 @@ import type { WorkBuddyCredential } from './accounts.ts'
 import { createHash, randomUUID } from 'node:crypto'
 import type { MarketExpert } from './task-events.ts'
 import type { ChatMessage } from './context-budget.ts'
+import { routeTransportKind } from './route-diagnostics.ts'
 
 /** Upstream failure classes the shim maps onto distinct HTTP answers. */
 export type UpstreamErrorKind =
@@ -180,7 +181,7 @@ export interface WorkBuddyCompensationClaim {
 /** Result of one upstream chat attempt. */
 export type ChatStreamResult =
   | { ok: true; response: Response }
-  | { ok: false; kind: UpstreamErrorKind; status: number; message: string }
+  | { ok: false; kind: UpstreamErrorKind; status: number; message: string; transport?: string }
 
 export interface UpstreamClientOptions {
   /** Injectable fetch, primarily for tests. */
@@ -1683,7 +1684,7 @@ export class WorkBuddyUpstreamClient {
         ...signal === undefined ? {} : { signal },
       })
     } catch (error: unknown) {
-      return { ok: false, kind: 'server', status: 0, message: `transport error: ${String(error)}` }
+      return { ok: false, kind: 'server', status: 0, message: `transport error: ${String(error)}`, transport: routeTransportKind(error) }
     }
     if (response.ok) return { ok: true, response }
     const text = (await response.text().catch(() => '')).slice(0, ERROR_BODY_LIMIT)

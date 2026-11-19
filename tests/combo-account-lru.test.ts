@@ -8,7 +8,7 @@ import { createChannelAccountRouting, type ChannelAccountEntry, type ChannelAcco
 import { createWorkBuddyShim } from '../src/shim.ts'
 import type { WorkBuddyCatalog, WorkBuddyModelInfo } from '../src/catalog.ts'
 import type { WorkBuddyAccountPool } from '../src/accounts.ts'
-import type { WorkBuddyUpstreamClient } from '../src/upstream.ts'
+import type { ChatStreamResult, WorkBuddyUpstreamClient } from '../src/upstream.ts'
 
 const shims: { close(): Promise<void> }[] = []
 afterEach(async () => { while (shims.length) await shims.pop()!.close() })
@@ -18,6 +18,7 @@ async function setup(path?: string, includeGlobal = false) {
   const hostSessionIds: string[] = []
   const cooled = new Set<string>()
   const failOnce = new Set<string>()
+  const upstreamFailures = new Map<string, Extract<ChatStreamResult, { ok: false }>>()
   const blockOnce = new Map<string, () => void>()
   const workAccounts = ['a', 'b'].map(id => ({ id, label: id, credential: { accessToken: id } }))
   const globalAccounts = [{ id: 'g', label: 'g', credential: { accessToken: 'g' } }]
@@ -44,6 +45,8 @@ async function setup(path?: string, includeGlobal = false) {
         })
       }
       if (failOnce.delete(key)) return { ok: false as const, kind: 'soft_rate' as const, status: 429, message: 'rate limited' }
+      const failure = upstreamFailures.get(key)
+      if (failure !== undefined) return failure
       served.push(key)
       return { ok: true as const, response: new Response(`data: {"choices":[{"delta":{"content":"${key}"}}]}\n\ndata: [DONE]\n\n`) }
     },
@@ -94,7 +97,7 @@ async function setup(path?: string, includeGlobal = false) {
     expect(response.status, body).toBe(200)
     return body
   }
-  return { ask, served, cooled, failOnce, blockOnce, shim, hostSessionIds }
+  return { ask, served, cooled, failOnce, upstreamFailures, blockOnce, shim, hostSessionIds }
 }
 
 describe('least recently used account/model routes', () => {
@@ -133,6 +136,27 @@ describe('least recently used account/model routes', () => {
     expect(x.served).toEqual(['wb:a:x', 'trae:t1:x', 'wb:a:y'])
     await x.ask('second')
     expect(x.served.at(-1)).toBe('wb:a:y')
+  })
+
+  it.each([
+    [{ kind: 'client', status: 400, message: '{"code":11133,"msg":"private prompt and bearer secret","extError":{"param":"reasoning.effort"}}' }, { upstreamCode: '11133', upstreamParam: 'reasoning.effort' }],
+    [{ kind: 'soft_rate', status: 429, message: '{"code":6004,"msg":"private prompt"}' }, { upstreamCode: '6004' }],
+    [{ kind: 'server', status: 0, message: 'transport error: fetch failed', transport: 'timeout' }, { reason: 'timeout', status: 504, upstreamStatus: 0 }],
+  ] as const)('records a sanitized upstream failure and its fallback for status $status', async (error, details) => {
+    const dir = await mkdtemp(join(tmpdir(), 'xdpool-diagnostics-'))
+    try {
+      const path = join(dir, 'state.json')
+      const x = await setup(path)
+      x.upstreamFailures.set('wb:a:x', { ok: false, ...error })
+      await x.ask('private-session')
+      expect(x.served).toEqual(['trae:t1:x'])
+      const log = await readFile(`${path}.events.jsonl`, 'utf8')
+      const events = log.trim().split('\n').map(line => JSON.parse(line))
+      expect(events[0]).toMatchObject({ requestId: expect.any(String), event: 'skip', status: error.status, member: 'x', ...details })
+      expect(events[1]).toMatchObject({ requestId: events[0].requestId, event: 'result', outcome: 'recovered', member: 'trae:x', failures: 1 })
+      expect(log).not.toMatch(/private prompt|bearer secret|private-session/)
+      await x.shim.close()
+    } finally { await rm(dir, { recursive: true, force: true }) }
   })
 
   it('sends a stable hashed session identity to the selected channel', async () => {

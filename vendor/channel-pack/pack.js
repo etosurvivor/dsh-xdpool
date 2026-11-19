@@ -31529,6 +31529,11 @@ function normalizeHarnessMessages(messages) {
 import { EMPTY_RESPONSE_CODE, LlmError } from "@deepseek-ai/dsh-llm";
 async function readWithIdleTimeout(reader, timeoutMs, label, signal, phase = "chunk") {
   if (signal?.aborted) throw signal.reason ?? new Error("aborted");
+  // A Heybash route watches actual output and supplies its own abort signal.
+  // Leave the adapter deadlines intact for calls made outside that route.
+  if (globalThis[Symbol.for("heybash.xdpool.route-manages-stream-timeout")]?.getStore() === true) {
+    return reader.read();
+  }
   let timer;
   const onUserAbort = () => {
     if (timer) clearTimeout(timer);

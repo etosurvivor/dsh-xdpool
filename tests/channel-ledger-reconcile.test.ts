@@ -61,4 +61,28 @@ describe('channel usage reconciliation', () => {
       expect(result.entries).toHaveLength(0)
     } finally { rmSync(home, { recursive: true, force: true }) }
   })
+
+  it('keeps a retry and its successful fallback together across midnight', () => {
+    const home = mkdtempSync(join(tmpdir(), 'xdpool-ledger-'))
+    try {
+      mkdirSync(join(home, 'channel-pack'))
+      writeFileSync(join(home, 'channel-pack', 'token-ledger.json'), JSON.stringify({ days: {
+        '2026-11-18': { 'direct|trae|a|flash': { requests: 2, reportedRequests: 2, inputTokens: 20, outputTokens: 6 } },
+      } }))
+      const recorder = new UsageRecorder()
+      const before = Date.parse('2026-11-17T15:59:59Z')
+      const after = Date.parse('2026-11-17T16:00:01Z')
+      recorder.record({ channel: 'workbuddy', region: 'cn', model: 'flash', turnId: 'old', at: before - 1, ok: false })
+      recorder.record({ channel: 'trae', region: '', model: 'flash', turnId: 'old', at: before, ok: true })
+      recorder.record({ channel: 'trae', region: '', model: 'flash', turnId: 'spans', at: before, ok: false })
+      recorder.record({ channel: 'workbuddy', region: 'cn', model: 'flash', turnId: 'spans', at: before, ok: false })
+      recorder.record({ channel: 'trae', region: '', model: 'flash', turnId: 'spans', at: after, ok: true,
+        usage: { inputTokens: 10, outputTokens: 3, cachedTokens: 0, reasoningTokens: 0 } })
+      const result = reconcileChannelLedger(home, recorder.summary(), new Set(['trae']), after)
+      expect(result).toMatchObject({ turns: 1, recoveredTurns: 1, failedTurns: 0, calls: 4 })
+      expect(result.entries.map(entry => entry.turnId)).toEqual(['spans', 'spans', 'spans'])
+      expect(result.rows.find(row => row.channel === 'trae')).toMatchObject({ calls: 3, failed: 1, inputTokens: 20 })
+      expect(result.rows.find(row => row.channel === 'workbuddy')).toMatchObject({ calls: 1, failed: 1 })
+    } finally { rmSync(home, { recursive: true, force: true }) }
+  })
 })

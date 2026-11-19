@@ -48,24 +48,28 @@ interface LedgerStats {
  * authoritative overlapping snapshot, never add them to the same live calls.
  */
 export function reconcileChannelLedger(home: string, summary: UsageSummary, channels: ReadonlySet<string>, now = Date.now()): UsageSummary {
-  let day: Record<string, unknown>
+  let day: Record<string, unknown> = {}
   const ledgerDay = (at: number): string => new Date(at + 8 * 60 * 60_000).toISOString().slice(0, 10)
   const today = ledgerDay(now)
   try {
     const parsed = JSON.parse(readFileSync(join(home, LEDGER_FILE), 'utf8')) as { days?: Record<string, unknown> }
     // The pack uses a fixed UTC+8 accounting day, independently of host TZ.
     const value = parsed.days?.[today]
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) return summary
-    day = value as Record<string, unknown>
-  } catch { return summary }
-  // The live recorder can span midnight; the pack snapshot is today only.
-  // Compare like periods rather than max-ing yesterday's usage into today.
-  if (summary.entries.some(entry => channels.has(entry.channel) && ledgerDay(entry.at) !== today)) {
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) day = value as Record<string, unknown>
+  } catch { /* The live recorder is still usable without the pack snapshot. */ }
+  // Keep all attempts of a turn in the day its latest attempt completed.
+  // Use only today's physical calls for deduplication against the pack ledger.
+  let todayRows = summary.rows
+  if (summary.entries.some(entry => ledgerDay(entry.at) !== today)) {
     const current = new UsageRecorder(Math.max(1, summary.entries.length))
-    for (const entry of [...summary.entries].reverse()) {
-      if (!channels.has(entry.channel) || ledgerDay(entry.at) === today) current.record(entry)
+    const todayCalls = new UsageRecorder(Math.max(1, summary.entries.length))
+    const currentTurns = new Set(summary.entries.filter(entry => ledgerDay(entry.at) === today).map(entry => entry.turnId))
+    for (const entry of summary.entries.slice().reverse()) {
+      if (currentTurns.has(entry.turnId)) current.record(entry)
+      if (ledgerDay(entry.at) === today) todayCalls.record(entry)
     }
     summary = current.summary()
+    todayRows = todayCalls.summary().rows
   }
   const totals = new Map<string, { channel: string; model: string; calls: number; failed: number; input: number; output: number; cached: number; reasoning: number; reported: boolean }>()
   for (const [key, raw] of Object.entries(day)) {
@@ -95,17 +99,21 @@ export function reconcileChannelLedger(home: string, summary: UsageSummary, chan
         inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0, tps: null, avgTtftMs: null, lastUsedAt: 0 } satisfies UsageRow
       rows.push(row)
     }
-    // The file is flushed asynchronously; max also retains a just-completed
-    // live request during that brief window without double-counting it later.
-    extraCalls += Math.max(0, total.calls - row.calls)
-    extraInput += Math.max(0, total.input - row.inputTokens)
-    extraOutput += Math.max(0, total.output - row.outputTokens)
-    row.calls = Math.max(row.calls, total.calls)
-    row.failed = Math.max(row.failed, total.failed)
-    row.inputTokens = Math.max(row.inputTokens, total.input)
-    row.outputTokens = Math.max(row.outputTokens, total.output)
-    row.cachedTokens = Math.max(row.cachedTokens, total.cached)
-    row.reasoningTokens = Math.max(row.reasoningTokens, total.reasoning)
+    // The file is flushed asynchronously. Add only what today's live
+    // counters lack, even when a turn also includes attempts before midnight.
+    const live = todayRows.find(item => item.channel === total.channel && item.region === '' && item.model === total.model)
+    const calls = Math.max(0, total.calls - (live?.calls ?? 0))
+    const input = Math.max(0, total.input - (live?.inputTokens ?? 0))
+    const output = Math.max(0, total.output - (live?.outputTokens ?? 0))
+    extraCalls += calls
+    extraInput += input
+    extraOutput += output
+    row.calls += calls
+    row.failed += Math.max(0, total.failed - (live?.failed ?? 0))
+    row.inputTokens += input
+    row.outputTokens += output
+    row.cachedTokens += Math.max(0, total.cached - (live?.cachedTokens ?? 0))
+    row.reasoningTokens += Math.max(0, total.reasoning - (live?.reasoningTokens ?? 0))
   }
   rows.sort((a, b) => (b.calls - a.calls) || (b.lastUsedAt - a.lastUsedAt) || a.model.localeCompare(b.model))
   const days = summary.days.map(row => ({ ...row }))

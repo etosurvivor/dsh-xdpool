@@ -52,7 +52,7 @@ describe('a channel member runs on the host lane', () => {
     // event loop would put this member's text on the wire before knowing whether
     // it answers, which is exactly what the chain's retry rule forbids.
     expect(body).toContain('const hostFrames: string[] = []')
-    expect(body).toContain('for (const payload of hostFrames) res.write(')
+    expect(body).toContain('writeBufferedRouteReply(res, raw, member.modelId, hostFrames)')
   })
 
   it('sends the BARE model id upstream', () => {

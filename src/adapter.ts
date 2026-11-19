@@ -20,9 +20,10 @@ import type { Context } from '@deepseek-ai/cordis'
 import { badgeLabels, shouldSpellOutFree } from './badges.ts'
 import type { WorkBuddyCatalog, WorkBuddyModelInfo } from './catalog.ts'
 import { isAggregateCatalog, type AggregateCatalog, type AggregateModelRow } from './aggregate.ts'
-import type { ComboModelRow } from './combos.ts'
+import { isComboId, type ComboModelRow } from './combos.ts'
 import type { WorkBuddyShim } from './shim.ts'
 import type { FreeModelRow } from './free-catalog.ts'
+import { createRouteLoopbackFetch } from './route-transport.ts'
 /** Provider route this bundle owns. */
 /** Provider route this bundle owns for the domestic (CN) gateway. */
 export const XDPOOL_PROVIDER = 'xdpool'
@@ -79,6 +80,9 @@ export const POOL_NAME_BY_REGION = {
 } as const
 /** Provider idle ceiling while one stream read is outstanding. */
 export const WORKBUDDY_STREAM_IDLE_TIMEOUT_MS = 300_000
+// Let the router time individual members before the buffered reply reaches
+// pi-ai. Use the largest supported timer only for route-model transport.
+const ROUTE_TRANSPORT_TIMEOUT_MS = 2_147_483_647
 /** Image-request budgets at the dsh-llm-pi-ai defaults. */
 const REQUEST_IMAGE_BUDGETS = {
   maxRequestImageBytes: 20_971_520,
@@ -375,7 +379,10 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
    * That is what users saw on the international gateway. Returning a brand-new
    * provider from a brand-new profile is the only lever the adapter is given.
    */
-  const makeProvider = (): Provider => {
+  const routeFetch = aggregateCatalog ? createRouteLoopbackFetch(() => shim.baseUrl()) : undefined
+  const makeProvider = (routed = false): Provider => {
+    const api = openAICompletionsApi()
+    const transport = routed ? routeFetch : undefined
     const base = createProvider({
       id: providerId,
       name: displayName,
@@ -391,7 +398,11 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
         },
       },
       models: buildModels(),
-      api: openAICompletionsApi(),
+      api: transport === undefined ? api : {
+        ...api,
+        stream: (model, context, options) => api.stream(model, context, { ...options, fetch: transport }),
+        streamSimple: (model, context, options) => api.streamSimple(model, context, { ...options, fetch: transport }),
+      },
     })
     // `getModels` is re-pointed at the live builder so a consumer that holds
     // this object and asks it directly (rather than going through the host
@@ -412,12 +423,15 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
     ...REQUEST_IMAGE_BUDGETS,
     piProvider,
   })
-  const profile: ResolvedPiAiProviderProfile = makeProfile(makeProvider())
-  // `modelErrors` is declared in the literal above: the pinned dsh-llm-pi-ai
-  // (0.1.5-rc.2) publishes it as required, so the cast-based workaround the
-  // older pin needed is gone.
-  let profiles = new Map<string, ResolvedPiAiProviderProfile>([[providerId, profile]])
-  const adapter = new PiAiAdapter({
+  const profileMap = (profile: ResolvedPiAiProviderProfile) => new Map([[providerId, profile]])
+  let profiles = profileMap(makeProfile(makeProvider()))
+  const routeProfileMap = () => routeFetch === undefined ? profiles : profileMap({ ...profiles.get(providerId)!,
+    piProvider: makeProvider(true),
+    streamIdleTimeoutMs: ROUTE_TRANSPORT_TIMEOUT_MS,
+    timeoutMs: ROUTE_TRANSPORT_TIMEOUT_MS,
+  })
+  let routeProfiles = routeProfileMap()
+  const config: ConstructorParameters<typeof PiAiAdapter>[0] = {
     profiles: () => profiles,
     auth: INERT_AUTH,
     // The shim's per-process secret is the OpenAI apiKey; the shim validates it
@@ -430,7 +444,18 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
     resolveAttachments: () => options.ctx.get('attachments'),
     resolveImageAccess: (attachments, ref) =>
       resolveImageAttachmentAccess(attachments, hostPath => options.ctx.get('fs')?.processPathFromHostPath(hostPath), ref),
-  })
+  }
+  const routedAdapter = aggregateCatalog ? new PiAiAdapter({ ...config, profiles: () => routeProfiles }) : undefined
+  const adapter = new class extends PiAiAdapter {
+    override prepareCall(...args: Parameters<PiAiAdapter['prepareCall']>) {
+      if (routedAdapter !== undefined && isComboId(args[1])) return routedAdapter.prepareCall(...args)
+      return super.prepareCall(...args)
+    }
+    override stream(options: Parameters<PiAiAdapter['stream']>[0]) {
+      if (routedAdapter !== undefined && isComboId(options.model)) return routedAdapter.stream(options)
+      return super.stream(options)
+    }
+  }(config)
   return {
     providerId,
     displayName,
@@ -440,7 +465,8 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
       // New map, new profile, new provider — see `makeProvider`. Anything less
       // leaves the host's cached model collection in place and the picker
       // unchanged.
-      profiles = new Map<string, ResolvedPiAiProviderProfile>([[providerId, makeProfile(makeProvider())]])
+      profiles = profileMap(makeProfile(makeProvider()))
+      routeProfiles = routeProfileMap()
     },
   }
 }

@@ -51,6 +51,11 @@ import {
 import { FREE_CHANNEL, FREE_MODEL_PREFIX } from './free-catalog.ts'
 import { ChannelRequestError, type ChannelLane } from './channel-lane.ts'
 import { ComboRouteState } from './combo-route-state.ts'
+import { routeErrorDetails, routeTransportKind } from './route-diagnostics.ts'
+import {
+  isRouteTimeout, modelOutputPhase, observeRoutePayload, RouteDecodeTiming, untilRouteAbort,
+  withRouteStreamTimeout, type ModelOutputPhase, type RouteDecodeSample, type RouteReading,
+} from './route-stream.ts'
 import type { ChannelAccountRouting } from './channel-account-routing.ts'
 export interface ShimLogger {
   info?(...args: unknown[]): void
@@ -61,7 +66,7 @@ export interface WorkBuddyShim {
   ready: Promise<void>
   baseUrl(): string
   token(): string
-  routeLastUsed(sessionId: string, chainId: string): Promise<{ channel: string; model: string } | undefined>
+  routeLastUsed(sessionId: string, chainId: string): Promise<RouteReading | undefined>
   /**
    * Everything the gateway could serve, with display names.
    *
@@ -200,6 +205,8 @@ export interface WorkBuddyShimOptions {
   region?: WorkBuddyRegion
   /** Max accounts to try per request before giving up. */
   maxAttempts?: number
+  /** Route-specific wait limits in milliseconds. */
+  comboTimeouts?: { firstOutputMs?: number; idleMs?: number }
   /**
    * Where per-call usage goes.
    *
@@ -284,7 +291,8 @@ const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]'])
  * reasoning model to emit its first token, short enough to give up inside one
  * turn rather than leaving the user staring at a spinner.
  */
-const MEMBER_TIMEOUT_MS = 180_000
+const MEMBER_FIRST_OUTPUT_MS = 20 * 60_000
+const MEMBER_IDLE_MS = 180_000
 /** HTTP status each upstream failure class surfaces as. */
 const KIND_STATUS: Readonly<Record<UpstreamErrorKind, number>> = {
   hard_credit: 402,
@@ -470,7 +478,7 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
   const comboLastUsed = new Map<string, number>()
   const comboSessionLocks = new Map<string, Promise<void>>()
   const knownComboMembers = new Map<string, ComboMember>()
-  const lastRoutes = new Map<string, string>()
+  const lastRoutes = new Map<string, { member: string; decode?: RouteDecodeSample }>()
   const COMBO_AFFINITY_LIMIT = 5000
   const routeState = options.comboAffinityPath === undefined ? undefined : new ComboRouteState(options.comboAffinityPath)
   const refreshBinding = (key: string | undefined): void => {
@@ -1187,7 +1195,27 @@ function withBareModelId(raw: string, modelId: string): string {
     signal: AbortSignal,
     sessionKey: string | undefined,
     parentKey: string | undefined,
+    viaRelay: boolean,
   ): Promise<void> {
+    const usageTurnId = randomBytes(8).toString('hex')
+    const traceRoute = (event: Record<string, unknown>): void => traceCombo({
+      chain: row.id, requestId: usageTurnId, session: sessionKey, viaRelay, ...event,
+    })
+    const startedAt = Date.now()
+    let attempt = 0
+    let failures = 0
+    let servedBy: string | undefined
+    let ended = false
+    const logOutcome = (): void => {
+      if (ended) return
+      ended = true
+      const cancelled = !res.writableFinished
+      if (failures === 0 && res.statusCode < 400) return
+      traceRoute({ event: 'result', outcome: cancelled ? 'cancelled' : servedBy === undefined ? 'failed' : 'recovered',
+        member: servedBy, status: res.statusCode, attempts: attempt, failures, elapsedMs: Date.now() - startedAt })
+    }
+    res.once('finish', logOutcome)
+    res.once('close', logOutcome)
     const store = aggregate?.readStore()
     const sources = {
       pool: catalog.current(),
@@ -1218,7 +1246,7 @@ function withBareModelId(raw: string, modelId: string): string {
     // A live catalog is not configuration: a transient listing failure can
     // omit a healthy member. Only an explicit removal invalidates the binding.
     if (binding !== undefined && !isConfigured(binding.member)) {
-      traceCombo({ chain: row.id, session: sessionKey, event: 'member_removed', member: binding.member })
+      traceRoute({ event: 'member_removed', member: binding.member })
       comboAffinities.delete(affinityKey!)
       routeState?.transaction(() => routeState.deleteBinding(affinityKey!))
       binding = undefined
@@ -1240,8 +1268,8 @@ function withBareModelId(raw: string, modelId: string): string {
       if (remembered !== undefined && remembered.contextWindow >= row.contextWindow) members.unshift(remembered)
     }
     let temporarilyMissingPreferred = preferred !== undefined && !members.some(member => member.modelId === preferred)
-    if (temporarilyMissingPreferred) traceCombo({ chain: row.id, session: sessionKey, event: 'directory_missing', member: preferred })
-    const body = JSON.parse(raw) as { messages?: { content?: unknown }[] }
+    if (temporarilyMissingPreferred) traceRoute({ event: 'directory_missing', member: preferred })
+    const body = JSON.parse(raw) as { messages?: { role?: string; content?: unknown }[]; tools?: unknown[] }
     const hasImage = Array.isArray(body.messages) && body.messages.some(message =>
       Array.isArray(message.content) && message.content.some((part: unknown) =>
         typeof part === 'object' && part !== null && ['image_url', 'input_image', 'image'].includes(String((part as { type?: unknown }).type))))
@@ -1328,12 +1356,13 @@ function withBareModelId(raw: string, modelId: string): string {
     }
     const observedMember = binding?.member
     const observedAccount = binding?.accountId
-    const settleMember = (memberId: string, accountId?: string): void => {
+    const settleMember = (memberId: string, accountId?: string, decode?: RouteDecodeSample): void => {
+      servedBy = memberId
       recordCandidateUse(memberId, accountId)
       if (sessionKey !== undefined) {
         const key = `${row.id}:${sessionKey}`
         lastRoutes.delete(key)
-        lastRoutes.set(key, memberId)
+        lastRoutes.set(key, { member: memberId, ...(decode === undefined ? {} : { decode }) })
         while (lastRoutes.size > COMBO_AFFINITY_LIMIT) {
           const oldest = lastRoutes.keys().next().value
           if (oldest === undefined) break
@@ -1350,7 +1379,7 @@ function withBareModelId(raw: string, modelId: string): string {
       const changed = !binding.confirmed || binding.member !== memberId || binding.accountId !== accountId
       if (binding.confirmed && changed) {
         const accountHash = (id: string | undefined): string | undefined => id === undefined ? undefined : createHash('sha256').update(id).digest('hex').slice(0, 12)
-        traceCombo({ chain: row.id, session: sessionKey, event: 'rebind', from: binding.member, to: memberId,
+        traceRoute({ event: 'rebind', from: binding.member, to: memberId,
           fromAccount: accountHash(binding.accountId), toAccount: accountHash(accountId) })
       }
       binding.member = memberId
@@ -1377,23 +1406,30 @@ function withBareModelId(raw: string, modelId: string): string {
      * shape invented for diagnostics would break every client that parses it.
      */
     const switches: string[] = []
+    const remainingCandidates = [...candidates]
     let memberStartedAt = Date.now()
     let attemptedAccountId: string | undefined
-    const noteSwitch = (member: string, kind: string, status: number, reason?: string): void => {
+    const noteSwitch = (member: string, kind: string, status: number, details: Record<string, unknown> = {}): void => {
+      failures += 1
       switches.push(`${member} → ${kind} (${String(status)})`)
-      traceCombo({ chain: row.id, session: sessionKey, event: 'skip', member, kind, status,
+      traceRoute({ event: 'skip', member, attempt, kind, status,
         elapsedMs: Date.now() - memberStartedAt,
         ...(attemptedAccountId === undefined ? {} : { account: createHash('sha256').update(attemptedAccountId).digest('hex').slice(0, 12) }),
-        ...(reason === undefined ? {} : { reason }) })
+        ...details })
       logger?.warn?.(`heybash-xdpool: chain ${row.id} skipped ${member}: ${kind} (${String(status)}); trying next`)
+      if (kind === 'timeout') {
+        // Skip the stalled model for this request, including any other account
+        // for the same member. Account-local refusals still rotate accounts.
+        for (let i = remainingCandidates.length - 1; i >= 0; i -= 1) {
+          if (remainingCandidates[i]?.modelId === member) remainingCandidates.splice(i, 1)
+        }
+      }
     }
     // The chain path had no conversation identity at all, which meant a combo
     // turn reached the gateway with no session headers and was refused with
     // 11128 in exactly the same way the single-model path was. Derived from the
     // same body, so every member of the chain files under one conversation.
     const conversationKey = sessionKey ?? conversationKeyOf(raw)
-    const usageTurnId = randomBytes(8).toString('hex')
-    const remainingCandidates = [...candidates]
     while (remainingCandidates.length > 0) {
       if (signal.aborted) return
       const takeNext = (): RouteCandidate => {
@@ -1406,32 +1442,40 @@ function withBareModelId(raw: string, modelId: string): string {
         return next
       }
       const member = routeState === undefined ? takeNext() : routeState.transaction(takeNext)
+      attempt += 1
       attemptedAccountId = member.routeAccountId
       // A failed attempt also used this combination; otherwise a broken but
       // uncooled endpoint would remain the oldest and be chosen on every task.
       if (routeState === undefined) recordCandidateUse(member.modelId, member.routeAccountId)
       memberStartedAt = Date.now()
       attempts.push(member.modelId)
-      // A per-member deadline, so one hung upstream cannot hold the whole chain.
-      //
-      // The caller's signal covers "the user cancelled", not "this provider
-      // decided to hold the socket open". Without a deadline of its own, a single
-      // non-answering member blocks the request forever and the chain's whole
-      // purpose — try the next one — never happens. The reference router settled
-      // on 180s: long enough for a slow reasoning model to emit its first token,
-      // short enough to give up inside one turn.
-      //
-      // The member controller is DERIVED from the caller's, so a real
-      // cancellation still propagates immediately; this only adds a way to stop.
+      // Honor the longer window both before output and during reasoning.
+      // Once the model gives an answer or tool call, use the shorter window.
       const memberController = new AbortController()
       const memberSignal = memberController.signal
-      const relayAbort = (): void => { memberController.abort() }
+      const relayAbort = (): void => { memberController.abort(signal.reason) }
       if (signal.aborted) relayAbort()
       else signal.addEventListener('abort', relayAbort, { once: true })
-      const memberTimer = setTimeout(() => { memberController.abort() }, MEMBER_TIMEOUT_MS)
-      // A finished request must not hold the process open for the remainder of a
-      // deadline nothing is waiting on any more.
-      memberTimer.unref?.()
+      let memberTimer: ReturnType<typeof setTimeout> | undefined
+      let timeoutPhase: 'first' | ModelOutputPhase = 'first'
+      const armTimeout = (phase: 'first' | ModelOutputPhase): void => {
+        clearTimeout(memberTimer)
+        if (memberSignal.aborted) return
+        timeoutPhase = phase
+        const delay = phase === 'answer' ? options.comboTimeouts?.idleMs ?? MEMBER_IDLE_MS
+          : options.comboTimeouts?.firstOutputMs ?? MEMBER_FIRST_OUTPUT_MS
+        memberTimer = setTimeout(() => {
+          memberController.abort(new DOMException(`timed out waiting for model output (${phase})`, 'TimeoutError'))
+        }, delay)
+        memberTimer.unref?.()
+      }
+      let timing = new RouteDecodeTiming()
+      const onOutput = (phase: ModelOutputPhase): void => {
+        timing.markOutput()
+        armTimeout(phase)
+      }
+      const timedOut = (error: unknown): boolean => isRouteTimeout(memberSignal.reason) || isRouteTimeout(error)
+      armTimeout('first')
       /** Release this member's timer and listener. Every exit path calls it. */
       const releaseMember = (): void => {
         clearTimeout(memberTimer)
@@ -1465,7 +1509,7 @@ function withBareModelId(raw: string, modelId: string): string {
         if (channelTarget === undefined) {
           if (member.modelId === preferred && binding?.confirmed) {
             temporarilyMissingPreferred = true
-            traceCombo({ chain: row.id, session: sessionKey, event: 'directory_missing', member: preferred })
+            traceRoute({ event: 'directory_missing', member: preferred })
           }
           last = { kind: 'combo_config', status: 400, message: `member ${member.modelId} is not a resolvable channel model id` }
           noteSwitch(member.modelId, 'combo_config', 400)
@@ -1499,8 +1543,7 @@ function withBareModelId(raw: string, modelId: string): string {
         const runHostAttempt = async (retryAllowed: boolean): Promise<void> => {
         try {
           let finishReason = 'stop'
-          let sawVisible = false
-          for await (const event of channels.turn({
+          const events = channels.turn({
             channel: channelTarget.channel,
             modelId: channelTarget.modelId,
             // The caller's body with the id rewritten to the bare model: the
@@ -1508,7 +1551,8 @@ function withBareModelId(raw: string, modelId: string): string {
             body: JSON.parse(withBareModelId(raw, channelTarget.modelId)) as Record<string, unknown>,
             signal: memberSignal,
             ...(sessionKey === undefined ? {} : { sessionId: sessionKey }),
-          })) {
+          })
+          for await (const event of untilRouteAbort(events, memberSignal)) {
             // `continue` is deliberately NOT used inside this event loop: the
             // chain's diagnostic test counts every `continue` in this function as
             // "a member was skipped and must be recorded", and a loop-local skip
@@ -1516,18 +1560,18 @@ function withBareModelId(raw: string, modelId: string): string {
             if (event.kind === 'usage') {
               hostUsage = event.usage
             } else if (event.kind === 'done') {
-              if (typeof event.finishReason === 'string' && event.finishReason !== '') finishReason = event.finishReason
+              if (event.finishReason === 'abort') throw memberSignal.reason ?? new Error('channel aborted the response')
+              if (event.finishReason !== '') finishReason = event.finishReason
             } else {
               // `channels.turn` yields a structured delta (OpenAI-shaped already),
               // so it is passed through untouched rather than re-mapped.
               const delta = event.delta
-              if (delta['content'] !== undefined || delta['reasoning_content'] !== undefined
-                || Array.isArray(delta['tool_calls'])) {
-                sawVisible = true
-              }
+              const phase = modelOutputPhase(delta)
+              if (phase !== undefined) onOutput(phase)
               hostFrames.push(frameOf(delta, null))
             }
           }
+          memberSignal.throwIfAborted()
           /**
            * An empty answer is still an ANSWER.
            *
@@ -1543,18 +1587,22 @@ function withBareModelId(raw: string, modelId: string): string {
             model: channelTarget.modelId, choices: [], usage: hostUsage,
           }))
         } catch (error: unknown) {
+          if (signal.aborted) throw error
           recordHostCall(false)
           const message = error instanceof Error ? error.message : String(error)
           // Retry a transient transport/server failure once on the pinned member,
-          // within the original deadline. Authentication, rate limits and bad
-          // requests still fall back immediately.
-          const retryable = /fetch failed|ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|timed?\s*out|\b50[234]\b/iu.test(message)
+          // on a fresh attempt. Timeout, authentication and rate limits
+          // advance straight to the next member.
+          const retryable = !timedOut(error) && /fetch failed|ECONNRESET|ECONNREFUSED|EPIPE|\b50[234]\b/iu.test(message)
             && !/\b(?:401|403|429)\b|rate.?limit|unauthori[sz]ed/iu.test(message)
           if (retryAllowed && retryable && binding?.confirmed && member.modelId === preferred
             && !signal.aborted && !memberSignal.aborted && !(error instanceof ChannelRequestError)) {
-            traceCombo({ chain: row.id, session: sessionKey, event: 'retry', member: member.modelId, reason: 'transient' })
+            failures += 1
+            traceRoute({ event: 'retry', member: member.modelId, attempt, reason: 'transient', ...routeErrorDetails(message) })
             hostFrames.length = 0
             hostUsage = undefined
+            timing = new RouteDecodeTiming()
+            armTimeout('first')
             await runHostAttempt(false)
             return
           }
@@ -1563,41 +1611,31 @@ function withBareModelId(raw: string, modelId: string): string {
         }
         try {
           if (member.routeAccountId !== undefined && options.channelAccountRouting !== undefined) {
-            await options.channelAccountRouting.run(channelTarget.channel, channelTarget.modelId, member.routeAccountId, () => runHostAttempt(true))
-          } else await runHostAttempt(true)
+            await options.channelAccountRouting.run(channelTarget.channel, channelTarget.modelId, member.routeAccountId,
+              () => withRouteStreamTimeout(() => runHostAttempt(true)))
+          } else await withRouteStreamTimeout(() => runHostAttempt(true))
         } catch (error: unknown) {
+          if (signal.aborted) return
           const message = error instanceof Error ? error.message : String(error)
-          const kind = error instanceof ChannelRequestError ? 'client' : 'server'
+          const idle = timedOut(error)
+          const kind = idle ? 'timeout' : error instanceof ChannelRequestError ? 'client' : 'server'
           const reason = /\b429\b|rate.?limit/iu.test(message) ? 'rate_limit'
             : /\b(?:401|403)\b|unauthori[sz]ed/iu.test(message) ? 'authentication'
-              : memberSignal.aborted && !signal.aborted ? 'timeout'
-                : /timed?\s*out|ETIMEDOUT/iu.test(message) ? 'timeout'
+              : idle ? 'timeout'
                   : /fetch failed|ECONNRESET|ECONNREFUSED|EPIPE/iu.test(message) ? 'network' : 'upstream_error'
           last = {
             kind,
-            status: kind === 'client' ? 400 : 502,
+            status: idle ? 504 : kind === 'client' ? 400 : 502,
             message: `channel ${channelTarget.channel}: ${message}`,
           }
-          noteSwitch(member.modelId, kind, last.status, reason)
+          noteSwitch(member.modelId, kind, last.status, { reason, ...routeErrorDetails(message), ...(idle ? { timeoutPhase } : {}) })
           continue
         }
         // Buffered payloads become the response, exactly as the aggregate branch
         // does below.
         recordHostCall(true)
-        settleMember(member.modelId, member.routeAccountId)
-        if (wantsNonStreaming(raw)) {
-          writeJson(res, 200, bufferedFramesToCompletion(hostFrames, member.modelId))
-          return
-        }
-        res.writeHead(200, {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          'Connection': 'keep-alive',
-          'X-Accel-Buffering': 'no',
-        })
-        for (const payload of hostFrames) res.write(`data: ${payload}\n\n`)
-        res.write('data: [DONE]\n\n')
-        res.end()
+        settleMember(member.modelId, member.routeAccountId, timing.sample(parseUsage(hostUsage)?.outputTokens))
+        writeBufferedRouteReply(res, raw, member.modelId, hostFrames)
         return
       }
       if (!member.aggregate) {
@@ -1611,6 +1649,7 @@ function withBareModelId(raw: string, modelId: string): string {
         const triedAccounts = new Set<string>()
         const accountLimit = (): number => member.routeAccountId === undefined ? Math.min(maxAttempts, Math.max(1, pool.list(member.routePoolRegion ?? region).length)) : 1
         let poolLast: { kind: string; status: number; message: string } | undefined
+        let poolFailureDetails: Record<string, unknown> = {}
         const tryPoolAccount = async (): Promise<boolean> => {
           if (memberSignal.aborted || triedAccounts.size >= accountLimit()) return false
           const poolModel = member.routePoolModel ?? member.modelId
@@ -1631,39 +1670,73 @@ function withBareModelId(raw: string, modelId: string): string {
           }
           if (triedAccounts.has(account.id)) return false
           triedAccounts.add(account.id)
+          attemptedAccountId = account.id
           prepared ??= client.prepareChatBodyFor(memberRaw, poolRegion ?? 'cn')
+          timing = new RouteDecodeTiming()
+          const tracker = new StreamTracker(Date.now())
+          const recordPoolCall = (ok: boolean): void => {
+            tracker.finish(Date.now())
+            usageRecorder?.record({ channel: 'workbuddy', region: poolRegion ?? 'cn', model: poolModel,
+              account: account.label, turnId: usageTurnId, at: Date.now(), ok,
+              ...(tracker.ttftMs === undefined ? {} : { ttftMs: tracker.ttftMs }),
+              ...(tracker.decodeMs === undefined ? {} : { decodeMs: tracker.decodeMs }),
+              ...(tracker.usage === undefined ? {} : { usage: tracker.usage }) })
+          }
           const result = await client.chatStream(account.credential, prepared, memberSignal, conversationKey)
+          if (signal.aborted) return false
           if (result.ok) {
-            const memberUsage = usageRecorder === undefined
-              ? undefined
-              : { recorder: usageRecorder, region: poolRegion ?? 'cn', model: poolModel, turnId: usageTurnId }
-            if (wantsNonStreaming(raw)) {
-              await serveSuccessfulJson(res, account, result, logger, refreshBalance, pool,
-                memberUsage, poolModel, () => settleMember(member.modelId, account.id))
-            } else {
-              await serveSuccessfulStream(res, account, result, logger, refreshBalance, pool,
-                memberUsage, () => settleMember(member.modelId, account.id))
+            let frames: string[]
+            try {
+              frames = await collectRoutedPoolFrames(result.response, memberSignal, tracker, onOutput)
+            } catch (error: unknown) {
+              if (signal.aborted) return false
+              recordPoolCall(false)
+              const idle = timedOut(error)
+              poolLast = { kind: idle ? 'timeout' : 'server', status: idle ? 504 : 502,
+                message: error instanceof Error ? error.message : String(error) }
+              poolFailureDetails = idle ? { reason: 'timeout', timeoutPhase } : { reason: routeTransportKind(error) }
+              return false
             }
+            recordPoolCall(true)
+            pool.noteServed(account.id)
+            void refreshBalance(account)
+            if (pool.expiryReadingOf(account.id).stale) pool.warmExpiryReadingFor(account.id)
+            settleMember(member.modelId, account.id, timing.sample(tracker.usage?.outputTokens))
+            writeBufferedRouteReply(res, raw, poolModel, frames, true)
             return true
           }
-          usageRecorder?.record({ channel: 'workbuddy', region: poolRegion ?? 'cn', model: poolModel,
-            account: account.label, turnId: usageTurnId, at: Date.now(), ok: false })
-          poolLast = { kind: result.kind, status: result.status, message: result.message }
+          recordPoolCall(false)
+          const idle = timedOut(result.message) || result.transport === 'timeout'
+          poolLast = { kind: idle ? 'timeout' : result.kind, status: idle ? 504 : result.status, message: result.message }
+          poolFailureDetails = {
+            ...routeErrorDetails(result.message),
+            ...(idle ? { reason: 'timeout', timeoutPhase } : result.status === 0 ? { reason: result.transport ?? 'transport' } : {}),
+            ...(result.status === 400 ? { messages: body.messages?.length ?? 0, tools: body.tools?.length ?? 0, hasImage } : {}),
+          }
+          if (idle) {
+            poolFailureDetails.upstreamStatus = result.status
+            return false
+          }
           if (result.kind === 'soft_rate') pool.penalize(account.id, parseRateLimitReset(result.message), poolModel)
           else if (result.kind === 'session_dead') pool.penalizeCredentialDead(account.id)
           else if (result.kind === 'risk_blocked') pool.penalize(account.id, Date.now() + 30 * 60_000)
           else if (result.kind === 'hard_credit') pool.penalizeExhausted(account.id)
           else return false
           if (triedAccounts.size < accountLimit()) {
-            traceCombo({ chain: row.id, session: sessionKey, event: 'retry_account', member: member.modelId, kind: result.kind })
+            failures += 1
+            traceRoute({ event: 'retry_account', member: member.modelId, attempt, kind: result.kind, status: result.status, ...poolFailureDetails })
+            armTimeout('first')
             return tryPoolAccount()
           }
           return false
         }
         if (await tryPoolAccount()) return
         if (signal.aborted) return
-        last = poolLast ?? { kind: 'combo_empty', status: 503, message: `member ${member.modelId} has no usable WorkBuddy account` }
-        noteSwitch(member.modelId, last.kind, last.status)
+        const idle = timedOut(undefined)
+        last = poolLast ?? (idle ? { kind: 'timeout', status: 504, message: 'timed out waiting for the first model output' }
+          : { kind: 'combo_empty', status: 503, message: `member ${member.modelId} has no usable WorkBuddy account` })
+        if (idle) poolFailureDetails = { ...poolFailureDetails, reason: 'timeout', timeoutPhase }
+        noteSwitch(member.modelId, last.kind, last.status, poolFailureDetails)
         continue
       }
       if (store === undefined || aggregate === undefined) {
@@ -1690,12 +1763,14 @@ function withBareModelId(raw: string, modelId: string): string {
         continue
       }
       const frames: string[] = []
+      let decode: RouteDecodeSample | undefined
       try {
-        await forwardAggregateStreamed(resolved, parsed.modelId, withMemberReasoningEffort(
+        const result = await forwardAggregateStreamed(resolved, parsed.modelId, withMemberReasoningEffort(
           withBareModelId(raw, parsed.modelId), member.supportedEfforts,
         ), {
           signal: memberSignal,
           onData: payload => frames.push(payload),
+          onSsePayload: payload => observeRoutePayload(payload, onOutput),
           // A chain member on the aggregate side is still a physical call to a
           // third-party vendor, so it belongs in the ledger under that vendor's
           // name. Without this, a chain that answered through OpenCode would leave
@@ -1705,39 +1780,31 @@ function withBareModelId(raw: string, modelId: string): string {
             ? {}
             : { usage: { recorder: usageRecorder, turnId: usageTurnId } },
         })
+        memberSignal.throwIfAborted()
+        decode = timing.sample(result.usage?.outputTokens)
       } catch (error: unknown) {
-        const kind = error instanceof AggregateError ? error.kind : 'server'
+        if (signal.aborted) return
+        const idle = timedOut(error)
+        const kind = idle ? 'timeout' : error instanceof AggregateError ? error.kind : 'server'
         last = {
           kind,
-          status: error instanceof AggregateError ? KIND_STATUS[error.kind] : 502,
+          status: idle ? 504 : error instanceof AggregateError ? KIND_STATUS[error.kind] : 502,
           message: error instanceof Error ? error.message : String(error),
         }
-        noteSwitch(member.modelId, kind, last.status)
+        noteSwitch(member.modelId, kind, last.status, { ...routeErrorDetails(last.message), ...(idle ? { reason: 'timeout', timeoutPhase } : {}) })
         continue
       }
       // A member answered. Say which one when the chain had to skip anything:
       // the caller only sees the content, so without this line nobody can tell
       // that the answer came from the third choice rather than the first.
-      settleMember(member.modelId)
+      settleMember(member.modelId, undefined, decode)
       if (switches.length > 0) {
         logger?.info?.(
           `heybash-xdpool: chain ${row.id} served by ${member.modelId} after skipping `
             + `${String(switches.length)}/${String(members.length)}: ${switches.join('; ')}`,
         )
       }
-      if (wantsNonStreaming(raw)) {
-        writeJson(res, 200, bufferedFramesToCompletion(frames, member.modelId))
-        return
-      }
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
-      })
-      for (const payload of frames) res.write(`data: ${payload}\n\n`)
-      res.write('data: [DONE]\n\n')
-      res.end()
+      writeBufferedRouteReply(res, raw, member.modelId, frames)
       return
       } finally {
         releaseMember()
@@ -1827,7 +1894,7 @@ function withBareModelId(raw: string, modelId: string): string {
       }
       const sessionKey = session === undefined ? undefined : routingSessionKey(session)
       const parentKey = parent === undefined || parent === '' || parent.length > 1024 ? undefined : routingSessionKey(parent)
-      const serve = () => serveComboCompletion(res, raw, comboRow, controller.signal, sessionKey, parentKey)
+      const serve = () => serveComboCompletion(res, raw, comboRow, controller.signal, sessionKey, parentKey, fromLan(req))
       if (sessionKey !== undefined && comboRow.strategy === 'round-robin') {
         await withComboSessionLock(`${comboRow.id}:${sessionKey}`, controller.signal, res, serve)
       } else await serve()
@@ -2208,8 +2275,10 @@ function withBareModelId(raw: string, modelId: string): string {
       const key = `${chainId}:${routingSessionKey(sessionId)}`
       refreshBinding(key)
       const bound = comboAffinities.get(key)
-      const id = (bound?.confirmed === true ? bound.member : undefined) ?? lastRoutes.get(key)
       const row = aggregate?.catalog.findCombo(chainId)
+      const last = lastRoutes.get(key)
+      const recent = last !== undefined && row?.models.includes(last.member) ? last : undefined
+      const id = recent?.member ?? (bound?.confirmed === true ? bound.member : undefined)
       if (id === undefined || row === undefined || !row.models.includes(id)) return undefined
       const member = resolveComboMember(id, {
         pool: catalog.current(),
@@ -2222,7 +2291,7 @@ function withBareModelId(raw: string, modelId: string): string {
         : member.aggregate
           ? getProvider(member.providerId ?? '')?.name ?? member.providerId ?? 'Provider'
           : 'WorkBuddy 国内版'
-      return { channel, model: member.name }
+      return { channel, model: member.name, ...(recent?.decode === undefined ? {} : { decode: recent.decode }) }
     },
     close: () => closing ??= new Promise<void>((resolve, reject) => {
         server.close(() => {
@@ -2285,6 +2354,57 @@ function frameSpan(buf: Buffer): { contentEnd: number; frameEnd: number } | unde
  * and sending again is another PHYSICAL call for the SAME user request, and
  * billing it as a second turn would overstate how much the user asked for.
  */
+/** Commit only a complete member answer, so a fallback never mixes model output. */
+function writeBufferedRouteReply(res: ServerResponse, raw: string, model: string, frames: readonly string[], stripUsage = false): void {
+  if (wantsNonStreaming(raw)) {
+    writeJson(res, 200, bufferedFramesToCompletion(frames, model))
+    return
+  }
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  })
+  for (const payload of frames) {
+    if (!stripUsage || inspectSseFrame(`data: ${payload}`)?.usageOnly !== true) res.write(`data: ${payload}\n\n`)
+  }
+  res.end('data: [DONE]\n\n')
+}
+
+async function collectRoutedPoolFrames(
+  response: Response,
+  signal: AbortSignal,
+  tracker: StreamTracker,
+  onOutput: (phase: ModelOutputPhase) => void,
+): Promise<string[]> {
+  if (response.body === null) throw new Error('WorkBuddy returned no response body')
+  const frames: string[] = []
+  let done = false
+  let pending: Buffer<ArrayBufferLike> = Buffer.alloc(0)
+  const consume = (buffer: Buffer): Buffer => {
+    const { payloads, rest } = drainSsePayloads(buffer)
+    for (const payload of payloads) {
+      if (payload === '[DONE]') { done = true; break }
+      observeRoutePayload(payload, onOutput)
+      const inspected = inspectSseFrame(`data: ${payload}`)
+      if (inspected !== undefined) tracker.observe(inspected.parsed)
+      frames.push(payload)
+    }
+    return rest
+  }
+  const source = Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0], { signal })
+  for await (const chunk of source) {
+    tracker.markFirstByte()
+    pending = consume(Buffer.concat([pending, chunk as Buffer]))
+    if (done) break
+  }
+  signal.throwIfAborted()
+  if (!done && pending.length > 0) consume(Buffer.concat([pending, Buffer.from('\n\n')]))
+  if (!done) throw new Error('WorkBuddy stream ended without a completion marker')
+  return frames
+}
+
 interface UsageContext {
   recorder: UsageRecorder
   /** `cn` or `global`; the panel groups by gateway. */
@@ -2314,6 +2434,7 @@ async function serveSuccessfulStream(
   pool: WorkBuddyAccountPool,
   usage: UsageContext | undefined,
   onSuccess?: () => void,
+  onFailure?: (error?: unknown) => void,
 ): Promise<void> {
   logger?.info?.(`heybash-xdpool: served by ${account.label}`)
   // Only now is this account the one actually serving the user: a request
@@ -2347,10 +2468,11 @@ async function serveSuccessfulStream(
    * recorded as failed: the host got a 200 and then an answer that stops
    * halfway, which is a failed turn from the user's side of the wire.
    */
-  const finish = (ok: boolean): void => {
+  const finish = (ok: boolean, error?: unknown): void => {
     if (recorded) return
     recorded = true
     if (ok) onSuccess?.()
+    else onFailure?.(error)
     if (usage?.recorder === undefined) return
     usage.recorder.record({
       channel: 'workbuddy',
@@ -2416,7 +2538,7 @@ async function serveSuccessfulStream(
   })
   body.on('error', (error: unknown) => {
     logger?.warn('heybash-xdpool: upstream stream failed mid-flight', error)
-    finish(false)
+    finish(false, error)
     if (!sawDone && res.writable) res.end('data: [DONE]\n\n')
   })
   body.pipe(strip).pipe(res)
@@ -2444,6 +2566,7 @@ async function serveSuccessfulJson(
   usage: UsageContext | undefined,
   modelId: string | undefined,
   onSuccess?: () => void,
+  onFailure?: (error?: unknown) => void,
 ): Promise<void> {
   logger?.info?.(`heybash-xdpool: served by ${account.label} (non-streaming)`)
   pool.noteServed(account.id)
@@ -2455,6 +2578,7 @@ async function serveSuccessfulJson(
     if (recorded) return
     recorded = true
     if (ok) onSuccess?.()
+    else onFailure?.(failure)
     if (usage?.recorder === undefined) return
     usage.recorder.record({
       channel: 'workbuddy',

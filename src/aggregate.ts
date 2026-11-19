@@ -41,7 +41,7 @@ import {
   type ProviderSetting,
 } from './providers.ts'
 import { combosOf, orderApiKeys, providerApiKeys, providerAuthUsable, providerEnabled, type AggregateStore } from './store.ts'
-import { StreamTracker, type UsageCall } from './stats.ts'
+import { StreamTracker, type TokenUsage, type UsageCall } from './stats.ts'
 import {
   buildComboCatalog,
   pruneRotation,
@@ -751,6 +751,7 @@ export async function probeAggregateProvider(
 /** One turn's outcome: either the upstream status, or a classified failure. */
 export interface AggregateForwardResult {
   status: number
+  usage?: TokenUsage
 }
 /**
  * POST one streaming completion to the provider.
@@ -777,6 +778,8 @@ export async function forwardAggregateStreamed(
   options: {
     signal?: AbortSignal
     onData: (payload: string) => void
+    /** Observe SSE while it arrives, before the buffered reply is committed. */
+    onSsePayload?: (payload: string) => void
     timeoutMs?: number
     /**
      * Where to file this call, when the caller keeps a ledger.
@@ -881,14 +884,15 @@ export async function forwardAggregateStreamed(
       if (!rotatable || index === keys.length - 1) throw failure
     }
     if (response.body === null) throw new AggregateError('server', 'the provider returned no body', response.status)
-    const head = await readSseHead(response.body, controller.signal, timeoutMs)
+    const head = await readSseHead(response.body, controller.signal, timeoutMs, options.onSsePayload)
+    options.signal?.throwIfAborted()
     if (head.shape === 'empty') throw new AggregateError('server', 'the provider returned no body', response.status)
     if (head.shape === 'sse') {
       // Raw payloads, straight through: the wire's own decoder reads them, so
       // nothing is rewritten between the provider and the host.
       for (const payload of head.payloads) emit(payload)
       delivered = true
-      return { status: response.status }
+      return { status: response.status, ...(tracker.usage === undefined ? {} : { usage: tracker.usage }) }
     }
     let raw = head.text
     if (!head.done) {
@@ -933,7 +937,7 @@ export async function forwardAggregateStreamed(
     }
     for (const frame of synthesisedFrames(resolved.wire, payload, model)) emit(frame)
     delivered = true
-    return { status: response.status }
+    return { status: response.status, ...(tracker.usage === undefined ? {} : { usage: tracker.usage }) }
   } catch (error: unknown) {
     if (error instanceof AggregateError) throw error
     if (options.signal?.aborted === true) throw new AggregateError('client', 'request aborted')
@@ -1006,6 +1010,7 @@ export async function readSseHead(
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal,
   timeoutMs: number,
+  onPayload?: (payload: string) => void,
 ): Promise<SniffedHead> {
   const reader = body.getReader()
   const decoder = new TextDecoder()
@@ -1021,12 +1026,19 @@ export async function readSseHead(
     if (shape === 'sse') {
       // The head already carries whole frames; drain the remainder into the
       // same collector so frame order is preserved across the boundary.
-      const payloads = extractSsePayloads(text)
       // Only the head's UNTERMINATED line may be replayed into the collector.
       // Re-seeding the collector with the whole head would push the head's own
       // payloads a second time the moment the loop appends anything, which
       // duplicates the first frame of every streamed answer.
       const cut = text.lastIndexOf('\n')
+      const payloads: string[] = []
+      const collect = (chunk: string): void => {
+        for (const payload of extractSsePayloads(chunk)) {
+          onPayload?.(payload)
+          payloads.push(payload)
+        }
+      }
+      if (cut !== -1) collect(text.slice(0, cut + 1))
       let pending = cut === -1 ? text : text.slice(cut + 1)
       for (;;) {
         const chunk = await reader.read()
@@ -1036,17 +1048,17 @@ export async function readSseHead(
         if (end === -1) continue
         const settled = pending.slice(0, end)
         pending = pending.slice(end + 1)
-        payloads.push(...extractSsePayloads(settled))
+        collect(settled)
       }
       pending += decoder.decode()
-      payloads.push(...extractSsePayloads(pending))
+      collect(pending)
       return { shape: 'sse', payloads, text, done: true, decoder, reader }
     }
     head = { shape: 'json', text, done: first.done, decoder, reader }
     if (first.done) return { ...head, text: text + decoder.decode(), done: true }
     return head
   } finally {
-    if (signal.aborted) await reader.cancel().catch(() => {})
+    if (signal.aborted || (head === undefined && onPayload !== undefined)) await reader.cancel().catch(() => {})
   }
 }
 /**

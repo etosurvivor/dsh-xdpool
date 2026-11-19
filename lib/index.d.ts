@@ -315,6 +315,7 @@ type ChatStreamResult = {
   kind: UpstreamErrorKind;
   status: number;
   message: string;
+  transport?: string;
 };
 interface UpstreamClientOptions {
   /** Injectable fetch, primarily for tests. */
@@ -3338,6 +3339,15 @@ interface ChannelLane {
     sessionId?: string;
   }) => AsyncGenerator<ChannelLaneEvent>;
 }
+interface RouteDecodeSample {
+  decodeMs: number;
+  decodeTokens: number;
+}
+interface RouteReading {
+  channel: string;
+  model: string;
+  decode?: RouteDecodeSample;
+}
 interface ChannelAccountRouting {
   /** Undefined means the pack service is unavailable; [] means no eligible account. */
   candidates(provider: string, model: string): readonly string[] | undefined;
@@ -3352,10 +3362,7 @@ interface WorkBuddyShim {
   ready: Promise<void>;
   baseUrl(): string;
   token(): string;
-  routeLastUsed(sessionId: string, chainId: string): Promise<{
-    channel: string;
-    model: string;
-  } | undefined>;
+  routeLastUsed(sessionId: string, chainId: string): Promise<RouteReading | undefined>;
   /**
    * Everything the gateway could serve, with display names.
    *
@@ -3442,6 +3449,11 @@ interface WorkBuddyShimOptions {
   region?: WorkBuddyRegion;
   /** Max accounts to try per request before giving up. */
   maxAttempts?: number;
+  /** Route-specific wait limits in milliseconds. */
+  comboTimeouts?: {
+    firstOutputMs?: number;
+    idleMs?: number;
+  };
   /**
    * Where per-call usage goes.
    *
@@ -4389,10 +4401,7 @@ export declare function writePreferredId(accountId: string | undefined, path?: s
 /** Constructor dependencies — a narrow slice of the pool runtime. */
 interface PoolStatusRouteOptions {
   pool: WorkBuddyAccountPool;
-  routeLastUsed?: (sessionId: string, chainId: string) => Promise<{
-    channel: string;
-    model: string;
-  } | undefined>;
+  routeLastUsed?: (sessionId: string, chainId: string) => Promise<RouteReading | undefined>;
   /** Re-announce models after a rescan changes region availability. */
   onPoolChanged?: () => void;
   /** One catalog per region; the card reads the one for its active tab. */

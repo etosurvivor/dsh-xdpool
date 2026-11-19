@@ -37,6 +37,7 @@ import { PoolCard } from './PoolCard.tsx'
 import { CreditStrip } from './credit-strip.tsx'
 import { CreditDot } from './CreditDot.tsx'
 import { RouteLastUsed, type ModelDirectoryStore } from './RouteLastUsed.tsx'
+import { installRouteActivity } from './RouteActivity.tsx'
 import { PanelIcon } from './panel-icon.tsx'
 import { PoolPage } from './page.tsx'
 import { POOL_NAV_ICON_MASK_URL } from './nav-icon.ts'
@@ -246,6 +247,12 @@ export function apply(ctx: WorkBuddyClientContext): void {
      * with it.
      */
     try {
+      const directoryFor = (sessionId: string): ModelDirectoryStore | undefined => {
+        try {
+          const service = softGet('modelDirectories') as { directoryFor?: (id: string) => { store?: ModelDirectoryStore } } | undefined
+          return service?.directoryFor?.(sessionId)?.store
+        } catch { return undefined }
+      }
       ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
         name: 'conversation.composer.dock',
         id: 'xdpool-credit-dot',
@@ -256,14 +263,9 @@ export function apply(ctx: WorkBuddyClientContext): void {
         name: 'conversation.composer.dock',
         id: 'xdpool-route-last-used',
         order: 19,
-        inject: (sessionId: string): { directory?: ModelDirectoryStore; t?: PoolCardInjected['t'] } => {
-          try {
-            const service = softGet('modelDirectories') as { directoryFor?: (id: string) => { store?: ModelDirectoryStore } } | undefined
-            const directory = service?.directoryFor?.(sessionId)?.store
-            return { ...(directory === undefined ? {} : { directory }), ...(t === undefined ? {} : { t }) }
-          } catch { return t === undefined ? {} : { t } }
-        },
+        inject: (sessionId: string) => ({ directory: directoryFor(sessionId) }),
       }, RouteLastUsed))
+      ctx.effect(() => installRouteActivity(ctx.slots, directoryFor), 'heybash-xdpool: routed output speed')
     } catch (error: unknown) {
       console.error('[heybash-xdpool] composer credit dot unavailable (everything else unaffected):', error)
     }
